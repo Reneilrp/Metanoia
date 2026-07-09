@@ -13,13 +13,15 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
-import { SQLiteProvider, useSQLiteContext } from 'expo-sqlite';
+import { SQLiteProvider, useSQLiteContext, SQLiteDatabase } from 'expo-sqlite';
 import { 
   initializeDatabase, 
   DailyTaskItem, 
-  MasterScheduleItem 
+  MasterScheduleItem,
+  DailyReflectionItem
 } from './src/db/database';
 import { getDateStringForDay, getTaskStatus, calculateStreaks, DayProgress } from './src/utils/time';
+import * as Notifications from 'expo-notifications';
 import {
   Check,
   Plus,
@@ -49,6 +51,71 @@ const CATEGORIES = [
   { id: 'rest', name: 'Rest & Recover', color: '#8B5CF6', borderClass: 'border-violet-500', textClass: 'text-violet-500', bgClass: 'bg-violet-500/15' },
   { id: 'mindset', name: 'Mindset & Prep', color: '#F59E0B', borderClass: 'border-amber-500', textClass: 'text-amber-500', bgClass: 'bg-amber-500/15' },
 ];
+
+// Notifications Configuration
+Notifications.setNotificationHandler({
+  handleNotification: async () => ({
+    shouldShowAlert: true,
+    shouldPlaySound: true,
+    shouldSetBadge: false,
+    shouldShowBanner: true,
+    shouldShowList: true,
+  } as any),
+});
+
+const scheduleAllNotifications = async (db: SQLiteDatabase) => {
+  try {
+    const { status: existingStatus } = await Notifications.getPermissionsAsync();
+    let finalStatus = existingStatus;
+    if (existingStatus !== 'granted') {
+      const { status } = await Notifications.requestPermissionsAsync();
+      finalStatus = status;
+    }
+    if (finalStatus !== 'granted') {
+      console.log('Notifications permission not granted.');
+      return;
+    }
+
+    await Notifications.cancelAllScheduledNotificationsAsync();
+
+    const items = await db.getAllAsync<MasterScheduleItem>(
+      `SELECT * FROM master_schedule;`
+    );
+
+    const DAY_MAP: Record<string, number> = {
+      'Sun': 1,
+      'Mon': 2,
+      'Tue': 3,
+      'Wed': 4,
+      'Thu': 5,
+      'Fri': 6,
+      'Sat': 7,
+    };
+
+    for (const item of items) {
+      const [h, m] = item.time_start.split(':').map(Number);
+      const dayNum = DAY_MAP[item.day_of_week];
+      if (dayNum === undefined || h === undefined || m === undefined) continue;
+
+      await Notifications.scheduleNotificationAsync({
+        content: {
+          title: `Focus Time: ${item.activity_name}`,
+          body: `It's time for your ${item.estimated_duration}-min ${item.category} routine. Let's do this!`,
+          sound: true,
+        },
+        trigger: {
+          type: Notifications.SchedulableTriggerInputTypes.CALENDAR,
+          weekday: dayNum,
+          hour: h,
+          minute: m,
+          repeats: true,
+        },
+      });
+    }
+  } catch (error) {
+    console.error('Error scheduling notifications:', error);
+  }
+};
 
 function MainAppContent() {
   const db = useSQLiteContext();
@@ -85,6 +152,22 @@ function MainAppContent() {
   
   // Freeze State
   const [isDayFrozen, setIsDayFrozen] = useState(false);
+
+  // Focus Mindful Transition States
+  const [activeTransitionTask, setActiveTransitionTask] = useState<DailyTaskItem | null>(null);
+  const [transitionTimeLeft, setTransitionTimeLeft] = useState(60);
+  const transitionTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const breathAnim = useRef(new Animated.Value(1)).current;
+
+  // Daily Reflection States
+  const [reflectionModalVisible, setReflectionModalVisible] = useState(false);
+  const [reflectionFocus, setReflectionFocus] = useState<number | null>(null);
+  const [reflectionEnergy, setReflectionEnergy] = useState<'low' | 'medium' | 'high' | null>(null);
+  const [reflectionWin, setReflectionWin] = useState('');
+  
+  // History and Profile States
+  const [recentReflections, setRecentReflections] = useState<DailyReflectionItem[]>([]);
+  const [progressHistory, setProgressHistory] = useState<DayProgress[]>([]);
 
   // Toast State
   const [toast, setToast] = useState<{
@@ -233,8 +316,22 @@ function MainAppContent() {
       const { currentStreak: curr, longestStreak: long } = calculateStreaks(progressList);
       setCurrentStreak(curr);
       setLongestStreak(long);
+      setProgressHistory(progressList);
+      await loadRecentReflections();
     } catch (error) {
       console.error('Error loading streaks:', error);
+    }
+  };
+
+  // Load reflections history
+  const loadRecentReflections = async () => {
+    try {
+      const result = await db.getAllAsync<DailyReflectionItem>(
+        `SELECT * FROM daily_reflections ORDER BY log_date DESC LIMIT 5;`
+      );
+      setRecentReflections(result);
+    } catch (error) {
+      console.error('Error loading reflections:', error);
     }
   };
 
@@ -263,10 +360,33 @@ function MainAppContent() {
         [task.id, selectedDayDateString, newStatus]
       );
       await loadTasks();
+      await loadStreaks();
+      
       showToast(
         newStatus === 1 ? `Completed: ${task.activity_name}` : `Reset: ${task.activity_name}`, 
         newStatus === 1 ? 'success' : 'info'
       );
+
+      // Check if day is now fully complete (to prompt reflection modal)
+      if (newStatus === 1) {
+        const updated = await db.getAllAsync<DailyTaskItem>(
+          `SELECT m.id, COALESCE(l.is_completed, 0) as is_completed
+           FROM master_schedule m
+           LEFT JOIN progress_logs l ON m.id = l.schedule_id AND l.log_date = ?
+           WHERE m.day_of_week = ?;`,
+          [selectedDayDateString, selectedDay]
+        );
+        const total = updated.length;
+        const completed = updated.filter(t => t.is_completed === 1).length;
+        
+        if (total > 0 && completed === total) {
+          // Trigger Reflection Sheet
+          setReflectionFocus(null);
+          setReflectionEnergy(null);
+          setReflectionWin('');
+          setReflectionModalVisible(true);
+        }
+      }
     } catch (error) {
       console.error('Error toggling task:', error);
       showToast('Failed to update task', 'error');
@@ -307,6 +427,7 @@ function MainAppContent() {
       // Reload lists
       await loadMasterItems();
       await loadTasks();
+      await scheduleAllNotifications(db);
     } catch (error) {
       console.error('Error saving blueprint item:', error);
       showToast('Failed to save blueprint item', 'error');
@@ -319,6 +440,7 @@ function MainAppContent() {
       await db.runAsync(`DELETE FROM master_schedule WHERE id = ?;`, [id]);
       await loadMasterItems();
       await loadTasks();
+      await scheduleAllNotifications(db);
       showToast('Activity removed from blueprint', 'warning');
     } catch (error) {
       console.error('Error deleting blueprint item:', error);
@@ -388,10 +510,59 @@ function MainAppContent() {
     checkIfDayFrozen();
     loadTasks();
     loadStreaks();
+    scheduleAllNotifications(db);
     if (editModalVisible) {
       loadMasterItems();
     }
   }, [selectedDay, selectedDayDateString, editModalVisible]);
+
+  // Breathing Loop for transitions
+  useEffect(() => {
+    if (activeTransitionTask) {
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(breathAnim, {
+            toValue: 1.3,
+            duration: 3500,
+            useNativeDriver: true,
+          }),
+          Animated.timing(breathAnim, {
+            toValue: 1.0,
+            duration: 3500,
+            useNativeDriver: true,
+          })
+        ])
+      ).start();
+    }
+  }, [activeTransitionTask]);
+
+  const startTransition = (task: DailyTaskItem) => {
+    setActiveTransitionTask(task);
+    setTransitionTimeLeft(60);
+    
+    if (transitionTimerRef.current) {
+      clearInterval(transitionTimerRef.current);
+    }
+    
+    transitionTimerRef.current = setInterval(() => {
+      setTransitionTimeLeft(prev => {
+        if (prev <= 1) {
+          clearInterval(transitionTimerRef.current!);
+          setActiveTransitionTask(null);
+          showToast(`Focus session started for ${task.activity_name}!`, 'success');
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  };
+
+  const cancelTransition = () => {
+    if (transitionTimerRef.current) {
+      clearInterval(transitionTimerRef.current);
+    }
+    setActiveTransitionTask(null);
+  };
 
   // Clock updating (every 30 seconds to maintain contextual active indicators)
   useEffect(() => {
@@ -570,11 +741,9 @@ function MainAppContent() {
             const catDetails = getCategoryDetails(task.category);
 
             return (
-              <TouchableOpacity
+              <View
                 key={task.id}
-                activeOpacity={0.8}
-                onPress={() => handleToggle(task)}
-                className={`rounded-2xl mb-3 border overflow-hidden relative ${
+                className={`rounded-2xl mb-3 border overflow-hidden relative flex-row items-center ${
                   isCompleted 
                     ? 'opacity-40 border-[#121214] bg-[#0E0E0F]' 
                     : isActive 
@@ -587,22 +756,37 @@ function MainAppContent() {
                   <Animated.View
                     className="absolute top-0 left-0 right-0 bottom-0 border-2 rounded-2xl z-10"
                     style={{ borderColor: catDetails.color, opacity: pulseAnim }}
+                    pointerEvents="none"
                   />
                 )}
 
-                <View className="flex-row items-center py-4 px-4">
-                  {/* Left Column: Checkbox */}
-                  <View className="mr-3.5 z-20">
-                    <View
-                      className={`w-[22px] h-[22px] rounded-full border-2 justify-center items-center ${
-                        isCompleted ? 'border-zinc-800 bg-zinc-800' : catDetails.borderClass
-                      }`}
-                    >
-                      {isCompleted && <Check size={14} color="#000" strokeWidth={3} />}
-                    </View>
+                {/* Left Column: Checkbox */}
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  onPress={() => handleToggle(task)}
+                  className="py-4 pl-4 pr-3 justify-center z-20"
+                >
+                  <View
+                    className={`w-[22px] h-[22px] rounded-full border-2 justify-center items-center ${
+                      isCompleted ? 'border-zinc-800 bg-zinc-800' : catDetails.borderClass
+                    }`}
+                  >
+                    {isCompleted && <Check size={14} color="#000" strokeWidth={3} />}
                   </View>
+                </TouchableOpacity>
 
-                  {/* Middle Column: Details */}
+                {/* Middle/Right Column: Text Content & Details */}
+                <TouchableOpacity
+                  activeOpacity={0.85}
+                  onPress={() => {
+                    if (!isCompleted) {
+                      startTransition(task);
+                    } else {
+                      handleToggle(task);
+                    }
+                  }}
+                  className="flex-1 flex-row items-center py-4 pr-4 pl-1 z-20"
+                >
                   <View className="flex-1">
                     <View className="flex-row items-center mb-1">
                       <Clock size={12} color={isCompleted ? '#71717A' : '#A1A1AA'} className="mr-1" />
@@ -624,7 +808,7 @@ function MainAppContent() {
                     </Text>
                   </View>
 
-                  {/* Right Column: Category Badge */}
+                  {/* Category Badge */}
                   {!isCompleted && (
                     <View className={`px-2 py-1 rounded ${catDetails.bgClass}`}>
                       <Text className={`text-[10px] font-bold uppercase tracking-wider ${catDetails.textClass}`}>
@@ -632,11 +816,11 @@ function MainAppContent() {
                       </Text>
                     </View>
                   )}
-                </View>
+                </TouchableOpacity>
 
                 {/* Active task inner elapsed progress line */}
                 {isActive && !isCompleted && (
-                  <View className="h-[3px] bg-zinc-800 w-full absolute bottom-0">
+                  <View className="h-[3px] bg-zinc-800 w-full absolute bottom-0 left-0 right-0" pointerEvents="none">
                     <View
                       className="h-full"
                       style={{ 
@@ -646,11 +830,11 @@ function MainAppContent() {
                     />
                   </View>
                 )}
-              </TouchableOpacity>
+              </View>
             );
           })
         )}
-        {/* CONSISTENCY INDEX & STREAKS SECTION */}
+        {/* PROFILE, HISTORY & CONSISTENCY SECTION */}
         <View className="mt-6 bg-[#121214] rounded-2xl border border-zinc-900 overflow-hidden">
           {/* Section Header (Toggleable) */}
           <TouchableOpacity 
@@ -661,7 +845,7 @@ function MainAppContent() {
             <View className="flex-row items-center">
               <Text className="text-xl mr-2">🔥</Text>
               <View>
-                <Text className="text-zinc-50 text-sm font-bold">Consistency Index</Text>
+                <Text className="text-zinc-50 text-sm font-bold">Profile & Consistency</Text>
                 <Text className="text-zinc-500 text-[11px] font-medium">
                   Current Streak: {currentStreak} {currentStreak === 1 ? 'day' : 'days'}
                 </Text>
@@ -673,10 +857,106 @@ function MainAppContent() {
             </View>
           </TouchableOpacity>
 
-          {/* Expanded Streak Metrics */}
+          {/* Expanded Profile metrics, 28-day grid, milestones */}
           {isStreakPanelExpanded && (
             <View className="px-4 pb-4 pt-2 border-t border-zinc-900">
-              <Text className="text-zinc-500 text-[10px] font-bold uppercase tracking-wider mb-3">
+              
+              {/* 28-Day Consistency Grid */}
+              <View className="mb-4 bg-zinc-950 p-3.5 rounded-xl border border-zinc-900">
+                <Text className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider mb-2.5">
+                  Consistency Grid (Last 28 Days)
+                </Text>
+                <View className="flex-row flex-wrap justify-start">
+                  {progressHistory.slice(0, 28).reverse().map((day) => {
+                    const isPerfect = day.is_frozen === 1
+                      ? true
+                      : day.total_scheduled > 0 
+                        ? day.total_completed === day.total_scheduled 
+                        : true;
+                    
+                    let colorClass = 'bg-[#161618] border border-zinc-900';
+                    if (day.total_scheduled > 0) {
+                      colorClass = isPerfect ? 'bg-emerald-500 border-transparent' : 'bg-zinc-800 border-transparent';
+                    }
+                    if (day.is_frozen === 1) {
+                      colorClass = 'bg-blue-500 border-transparent';
+                    }
+
+                    return (
+                      <View 
+                        key={`grid-day-${day.date}`} 
+                        className={`w-6 h-6 rounded-md m-0.5 justify-center items-center ${colorClass}`}
+                      >
+                        {day.is_frozen === 1 && <Text className="text-[8px]">❄</Text>}
+                      </View>
+                    );
+                  })}
+                </View>
+                <View className="flex-row flex-wrap justify-between mt-2.5 px-0.5">
+                  <View className="flex-row items-center mr-2">
+                    <View className="w-2 h-2 rounded bg-emerald-500 mr-1" />
+                    <Text className="text-[8px] text-zinc-500 font-bold">Perfect</Text>
+                  </View>
+                  <View className="flex-row items-center mr-2">
+                    <View className="w-2 h-2 rounded bg-blue-500 mr-1" />
+                    <Text className="text-[8px] text-zinc-500 font-bold">Frozen</Text>
+                  </View>
+                  <View className="flex-row items-center mr-2">
+                    <View className="w-2 h-2 rounded bg-zinc-800 mr-1" />
+                    <Text className="text-[8px] text-zinc-500 font-bold">Failed</Text>
+                  </View>
+                  <View className="flex-row items-center">
+                    <View className="w-2 h-2 rounded bg-[#161618] border border-zinc-900 mr-1" />
+                    <Text className="text-[8px] text-zinc-500 font-bold">Rest</Text>
+                  </View>
+                </View>
+              </View>
+
+              {/* Reflection Journal Log */}
+              <View className="mb-4 bg-zinc-950 p-3.5 rounded-xl border border-zinc-900">
+                <View className="flex-row justify-between items-center mb-2.5">
+                  <Text className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider">
+                    Daily Reflection Log
+                  </Text>
+                  <TouchableOpacity
+                    onPress={() => {
+                      setReflectionFocus(null);
+                      setReflectionEnergy(null);
+                      setReflectionWin('');
+                      setReflectionModalVisible(true);
+                    }}
+                    className="bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded"
+                  >
+                    <Text className="text-[8px] text-zinc-400 font-bold">Reflect</Text>
+                  </TouchableOpacity>
+                </View>
+
+                {recentReflections.length === 0 ? (
+                  <Text className="text-zinc-700 text-xs text-center py-2">
+                    No reflections logged yet. Keep consistency to record your wins!
+                  </Text>
+                ) : (
+                  recentReflections.map((ref) => (
+                    <View key={`log-ref-${ref.log_date}`} className="mb-2 pb-2 border-b border-zinc-900 last:border-b-0">
+                      <View className="flex-row justify-between items-center mb-1">
+                        <Text className="text-[9px] text-zinc-500 font-bold font-mono">{ref.log_date}</Text>
+                        <View className="flex-row items-center">
+                          <Text className="text-[8px] font-bold text-zinc-500 mr-1.5">Focus: {ref.focus_rating === 1 ? '✅' : '❌'}</Text>
+                          <Text className={`text-[7px] font-black uppercase px-1 rounded ${
+                            ref.energy_level === 'high' ? 'bg-blue-500/10 text-blue-400' :
+                            ref.energy_level === 'medium' ? 'bg-amber-500/10 text-amber-400' :
+                            'bg-violet-500/10 text-violet-400'
+                          }`}>{ref.energy_level}</Text>
+                        </View>
+                      </View>
+                      <Text className="text-zinc-400 text-xs italic leading-4">"{ref.win_text || 'Completed.'}"</Text>
+                    </View>
+                  ))
+                )}
+              </View>
+
+              {/* Individual Milestones */}
+              <Text className="text-zinc-500 text-[10px] font-bold uppercase tracking-wider mb-2">
                 Task Milestones ({FULL_DAY_NAMES[selectedDay]})
               </Text>
 
@@ -687,12 +967,8 @@ function MainAppContent() {
               ) : (
                 tasks.map(task => {
                   const catDetails = getCategoryDetails(task.category);
-                  
-                  // 7 Days progress
                   const pct7 = Math.min(100, (task.completed_7 / 7) * 100);
-                  // 30 Days progress
                   const pct30 = Math.min(100, (task.completed_30 / 30) * 100);
-                  // 100 Days progress
                   const pct100 = Math.min(100, (task.completed_100 / 100) * 100);
 
                   return (
@@ -708,7 +984,7 @@ function MainAppContent() {
                         </View>
                       </View>
 
-                      {/* 7 Day Milestone Row */}
+                      {/* 7 Day Milestone */}
                       <View className="mb-1.5">
                         <View className="flex-row justify-between items-center mb-1">
                           <Text className="text-[10px] text-zinc-500 font-semibold">
@@ -726,7 +1002,7 @@ function MainAppContent() {
                         </View>
                       </View>
 
-                      {/* 30 Day Milestone Row */}
+                      {/* 30 Day Milestone */}
                       <View className="mb-1.5">
                         <View className="flex-row justify-between items-center mb-1">
                           <Text className="text-[10px] text-zinc-500 font-semibold">
@@ -744,7 +1020,7 @@ function MainAppContent() {
                         </View>
                       </View>
 
-                      {/* 100 Day Milestone Row */}
+                      {/* 100 Day Milestone */}
                       <View>
                         <View className="flex-row justify-between items-center mb-1">
                           <Text className="text-[10px] text-zinc-500 font-semibold">
@@ -761,7 +1037,6 @@ function MainAppContent() {
                           />
                         </View>
                       </View>
-
                     </View>
                   );
                 })
@@ -936,6 +1211,204 @@ function MainAppContent() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+      {/* 60-SECOND MINDFUL TRANSITION OVERLAY */}
+      {activeTransitionTask && (
+        <Modal
+          animationType="fade"
+          transparent={true}
+          visible={activeTransitionTask !== null}
+          onRequestClose={cancelTransition}
+        >
+          <View className="flex-1 bg-black justify-center items-center px-6">
+            <Text className="text-zinc-500 text-[10px] font-black uppercase tracking-widest mb-2">Mindful Transition</Text>
+            <Text className="text-zinc-50 text-2xl font-black text-center mb-10 px-4 leading-8">
+              Preparing for: {activeTransitionTask.activity_name}
+            </Text>
+
+            {/* Breathing Animation Ring */}
+            <View className="relative w-48 h-48 justify-center items-center mb-16">
+              <Animated.View 
+                style={{
+                  transform: [{ scale: breathAnim }],
+                  opacity: breathAnim.interpolate({
+                    inputRange: [1, 1.3],
+                    outputRange: [0.15, 0.4]
+                  })
+                }}
+                className="absolute w-44 h-44 rounded-full bg-blue-500"
+              />
+              <View className="absolute w-36 h-36 rounded-full bg-blue-500/10 border border-blue-500/20" />
+              <View className="w-28 h-28 rounded-full bg-[#09090B] border-2 border-blue-500/40 justify-center items-center">
+                <Text className="text-blue-400 text-3xl font-black font-mono">
+                  {String(Math.floor(transitionTimeLeft / 60)).padStart(2, '0')}:
+                  {String(transitionTimeLeft % 60).padStart(2, '0')}
+                </Text>
+              </View>
+            </View>
+
+            <Text className="text-zinc-400 text-sm font-semibold text-center mb-2">Put your phone face down.</Text>
+            <Text className="text-zinc-650 text-xs text-center mb-16 px-6 leading-5">
+              Take a deep breath. Release external noise. Focus on the single action in front of you.
+            </Text>
+
+            <View className="flex-row items-center">
+              <TouchableOpacity
+                onPress={cancelTransition}
+                className="px-6 py-3 rounded-xl border border-zinc-900 bg-zinc-950/45 mr-3"
+              >
+                <Text className="text-zinc-500 text-xs font-bold">Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => {
+                  if (transitionTimerRef.current) clearInterval(transitionTimerRef.current);
+                  setActiveTransitionTask(null);
+                  showToast(`Focus session started for ${activeTransitionTask.activity_name}!`, 'success');
+                }}
+                className="px-6 py-3 rounded-xl bg-blue-500"
+              >
+                <Text className="text-[#09090B] text-xs font-bold">Skip Timer & Start</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </Modal>
+      )}
+
+      {/* DAILY REFLECTION MODAL */}
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={reflectionModalVisible}
+        onRequestClose={() => setReflectionModalVisible(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          className="flex-1 bg-black/85 justify-end"
+        >
+          <View className="bg-[#09090B] rounded-t-[24px] px-5 pt-4 pb-8 h-[80%] border-t border-zinc-900">
+            {/* Sheet Handle */}
+            <View className="w-12 h-1 bg-zinc-800 rounded-full mx-auto mb-5" />
+
+            <View className="flex-row justify-between items-center mb-6">
+              <View>
+                <Text className="text-zinc-50 text-2xl font-black">Day Complete! 🎉</Text>
+                <Text className="text-zinc-500 text-xs font-semibold tracking-wider uppercase">Daily Reflection</Text>
+              </View>
+              <TouchableOpacity
+                className="bg-zinc-900 w-9 h-9 rounded-full justify-center items-center border border-zinc-800"
+                onPress={() => setReflectionModalVisible(false)}
+              >
+                <X size={20} color="#F4F4F5" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView className="flex-1" showsVerticalScrollIndicator={false}>
+              {/* Question 1: Focus */}
+              <View className="mb-6">
+                <Text className="text-zinc-300 text-sm font-bold mb-3">Did you protect your focus today?</Text>
+                <View className="flex-row">
+                  <TouchableOpacity
+                    onPress={() => setReflectionFocus(1)}
+                    className={`flex-1 py-3.5 rounded-xl border items-center mr-3 ${
+                      reflectionFocus === 1 
+                        ? 'bg-emerald-500/10 border-emerald-500' 
+                        : 'bg-zinc-950 border-zinc-900'
+                    }`}
+                  >
+                    <Text className={`text-sm font-bold ${reflectionFocus === 1 ? 'text-emerald-400' : 'text-zinc-500'}`}>Yes, fully</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={() => setReflectionFocus(0)}
+                    className={`flex-1 py-3.5 rounded-xl border items-center ${
+                      reflectionFocus === 0 
+                        ? 'bg-red-500/10 border-red-500' 
+                        : 'bg-zinc-950 border-zinc-900'
+                    }`}
+                  >
+                    <Text className={`text-sm font-bold ${reflectionFocus === 0 ? 'text-red-400' : 'text-zinc-500'}`}>No, distracted</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {/* Question 2: Energy */}
+              <View className="mb-6">
+                <Text className="text-zinc-300 text-sm font-bold mb-3">Rate your overall energy level:</Text>
+                <View className="flex-row">
+                  {(['low', 'medium', 'high'] as const).map(level => (
+                    <TouchableOpacity
+                      key={level}
+                      onPress={() => setReflectionEnergy(level)}
+                      className={`flex-1 py-3 rounded-xl border items-center capitalize ${
+                        level !== 'high' ? 'mr-2' : ''
+                      } ${
+                        reflectionEnergy === level
+                          ? level === 'high' ? 'bg-blue-500/10 border-blue-500' :
+                            level === 'medium' ? 'bg-amber-500/10 border-amber-500' :
+                            'bg-violet-500/10 border-violet-500'
+                          : 'bg-zinc-950 border-zinc-900'
+                      }`}
+                    >
+                      <Text 
+                        className={`text-xs font-bold ${
+                          reflectionEnergy === level 
+                            ? level === 'high' ? 'text-blue-400' : level === 'medium' ? 'text-amber-400' : 'text-violet-400'
+                            : 'text-zinc-500'
+                        }`}
+                      >
+                        {level}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+
+              {/* Question 3: Win */}
+              <View className="mb-8">
+                <Text className="text-zinc-300 text-sm font-bold mb-3">What was your biggest win today?</Text>
+                <TextInput
+                  multiline
+                  numberOfLines={3}
+                  className="bg-zinc-950 border border-zinc-900 rounded-xl px-4 py-3 text-zinc-50 text-sm h-24 align-top"
+                  placeholder="Today I finished my SQLite migrations, stayed clean of social media, or worked out..."
+                  placeholderTextColor="#3F3F46"
+                  value={reflectionWin}
+                  onChangeText={setReflectionWin}
+                />
+              </View>
+
+              {/* Submit Button */}
+              <TouchableOpacity
+                onPress={async () => {
+                  if (reflectionFocus === null || !reflectionEnergy) {
+                    showToast('Please answer the ratings questions', 'warning');
+                    return;
+                  }
+                  try {
+                    await db.runAsync(
+                      `INSERT INTO daily_reflections (log_date, focus_rating, energy_level, win_text)
+                       VALUES (?, ?, ?, ?)
+                       ON CONFLICT(log_date) DO UPDATE SET
+                         focus_rating = excluded.focus_rating,
+                         energy_level = excluded.energy_level,
+                         win_text = excluded.win_text;`,
+                      [selectedDayDateString, reflectionFocus, reflectionEnergy, reflectionWin]
+                    );
+                    showToast('Reflection saved successfully!', 'success');
+                    setReflectionModalVisible(false);
+                    loadStreaks();
+                  } catch (error) {
+                    console.error('Error saving reflection:', error);
+                    showToast('Failed to save reflection', 'error');
+                  }
+                }}
+                className="py-4 bg-zinc-50 rounded-xl items-center mb-10"
+              >
+                <Text className="text-zinc-950 text-sm font-bold">Save reflection & Close Day</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
       {/* Toast Notification */}
       {toast.visible && (
         <Animated.View

@@ -21,6 +21,14 @@ export interface DailyTaskItem {
   completed_100: number;
 }
 
+export interface DailyReflectionItem {
+  log_date: string;
+  focus_rating: number; // 0 or 1
+  energy_level: 'low' | 'medium' | 'high';
+  win_text: string;
+}
+
+
 /**
  * Initializes tables and triggers automatic relational seeding for Metanoia.
  * Built for modern async execution in expo-sqlite.
@@ -53,6 +61,13 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase): Promise<voi
     CREATE TABLE IF NOT EXISTS day_exceptions (
         log_date TEXT PRIMARY KEY,
         exception_type TEXT NOT NULL DEFAULT 'freeze'
+    );
+
+    CREATE TABLE IF NOT EXISTS daily_reflections (
+        log_date TEXT PRIMARY KEY,
+        focus_rating INTEGER,
+        energy_level TEXT,
+        win_text TEXT
     );
   `);
 

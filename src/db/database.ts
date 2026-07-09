@@ -28,6 +28,14 @@ export interface DailyReflectionItem {
   win_text: string;
 }
 
+export interface MilestoneReflectionItem {
+  id: number;
+  milestone_day: number;
+  log_date: string;
+  feelings_text: string;
+  changes_text: string;
+}
+
 
 /**
  * Initializes tables and triggers automatic relational seeding for Metanoia.
@@ -68,6 +76,14 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase): Promise<voi
         focus_rating INTEGER,
         energy_level TEXT,
         win_text TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS milestone_reflections (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        milestone_day INTEGER NOT NULL,
+        log_date TEXT NOT NULL,
+        feelings_text TEXT,
+        changes_text TEXT
     );
   `);
 

@@ -18,7 +18,8 @@ import {
   initializeDatabase, 
   DailyTaskItem, 
   MasterScheduleItem,
-  DailyReflectionItem
+  DailyReflectionItem,
+  MilestoneReflectionItem
 } from './src/db/database';
 import { getDateStringForDay, getTaskStatus, calculateStreaks, DayProgress } from './src/utils/time';
 import * as Notifications from 'expo-notifications';
@@ -169,6 +170,13 @@ function MainAppContent() {
   const [recentReflections, setRecentReflections] = useState<DailyReflectionItem[]>([]);
   const [progressHistory, setProgressHistory] = useState<DayProgress[]>([]);
 
+  // Milestone Checkpoint States
+  const [milestoneModalVisible, setMilestoneModalVisible] = useState(false);
+  const [currentMilestoneDay, setCurrentMilestoneDay] = useState<number | null>(null);
+  const [milestoneFeelings, setMilestoneFeelings] = useState('');
+  const [milestoneChanges, setMilestoneChanges] = useState('');
+  const [milestoneReflectionsList, setMilestoneReflectionsList] = useState<MilestoneReflectionItem[]>([]);
+
   // Toast State
   const [toast, setToast] = useState<{
     visible: boolean;
@@ -318,8 +326,21 @@ function MainAppContent() {
       setLongestStreak(long);
       setProgressHistory(progressList);
       await loadRecentReflections();
+      await loadMilestones();
     } catch (error) {
       console.error('Error loading streaks:', error);
+    }
+  };
+
+  // Load milestone checkpoints log
+  const loadMilestones = async () => {
+    try {
+      const result = await db.getAllAsync<MilestoneReflectionItem>(
+        `SELECT * FROM milestone_reflections ORDER BY milestone_day ASC;`
+      );
+      setMilestoneReflectionsList(result);
+    } catch (error) {
+      console.error('Error loading milestones:', error);
     }
   };
 
@@ -955,6 +976,40 @@ function MainAppContent() {
                 )}
               </View>
 
+              {/* Identity Milestone Logs */}
+              <View className="mb-4 bg-zinc-950 p-3.5 rounded-xl border border-zinc-900">
+                <Text className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider mb-2.5">
+                  Identity Milestone Logs
+                </Text>
+
+                {milestoneReflectionsList.length === 0 ? (
+                  <Text className="text-zinc-700 text-xs text-center py-2">
+                    Unlock milestone logs by hitting a 7, 30, or 100-day streak!
+                  </Text>
+                ) : (
+                  milestoneReflectionsList.map((m) => (
+                    <View key={`log-milestone-${m.id}`} className="mb-3 pb-3 border-b border-zinc-900 last:border-b-0">
+                      <View className="flex-row justify-between items-center mb-2">
+                        <Text className="text-[10px] font-black text-amber-400">
+                          🔓 {m.milestone_day}-Day Checkpoint
+                        </Text>
+                        <Text className="text-[9px] text-zinc-505 font-bold font-mono">{m.log_date}</Text>
+                      </View>
+                      
+                      <View className="mb-1.5">
+                        <Text className="text-[9px] text-zinc-500 font-semibold mb-0.5">What I feel now:</Text>
+                        <Text className="text-zinc-350 text-xs italic leading-4">"{m.feelings_text}"</Text>
+                      </View>
+
+                      <View>
+                        <Text className="text-[9px] text-zinc-500 font-semibold mb-0.5">Changes noticed since Day 1:</Text>
+                        <Text className="text-zinc-350 text-xs italic leading-4">"{m.changes_text}"</Text>
+                      </View>
+                    </View>
+                  ))
+                )}
+              </View>
+
               {/* Individual Milestones */}
               <Text className="text-zinc-500 text-[10px] font-bold uppercase tracking-wider mb-2">
                 Task Milestones ({FULL_DAY_NAMES[selectedDay]})
@@ -1394,7 +1449,57 @@ function MainAppContent() {
                     );
                     showToast('Reflection saved successfully!', 'success');
                     setReflectionModalVisible(false);
-                    loadStreaks();
+
+                    // Compute streak progress to verify milestone checkpoints
+                    const todayStr = todayInfo.dateStr;
+                    const progressList = await db.getAllAsync<DayProgress>(
+                      `WITH RECURSIVE dates(date) AS (
+                         VALUES(date(?, '-99 days'))
+                         UNION ALL
+                         SELECT date(date, '+1 day') FROM dates WHERE date < ?
+                       )
+                       SELECT 
+                         d.date,
+                         (SELECT COUNT(*) FROM master_schedule WHERE day_of_week = 
+                           CASE strftime('%w', d.date)
+                             WHEN '0' THEN 'Sun'
+                             WHEN '1' THEN 'Mon'
+                             WHEN '2' THEN 'Tue'
+                             WHEN '3' THEN 'Wed'
+                             WHEN '4' THEN 'Thu'
+                             WHEN '5' THEN 'Fri'
+                             WHEN '6' THEN 'Sat'
+                           END
+                         ) as total_scheduled,
+                         (SELECT COUNT(*) FROM progress_logs l 
+                          JOIN master_schedule m ON l.schedule_id = m.id
+                          WHERE l.log_date = d.date AND l.is_completed = 1
+                         ) as total_completed,
+                         (SELECT COUNT(*) FROM day_exceptions WHERE log_date = d.date AND exception_type = 'freeze') as is_frozen
+                       FROM dates d
+                       ORDER BY d.date DESC;`,
+                      [todayStr, todayStr]
+                    );
+
+                    const { currentStreak: streak } = calculateStreaks(progressList);
+
+                    const isMilestone = [7, 30, 100].includes(streak);
+                    if (isMilestone) {
+                      const alreadyLogged = await db.getFirstAsync<{ count: number }>(
+                        `SELECT COUNT(*) as count FROM milestone_reflections WHERE milestone_day = ?;`,
+                        [streak]
+                      );
+                      if (!alreadyLogged || alreadyLogged.count === 0) {
+                        setCurrentMilestoneDay(streak);
+                        setMilestoneFeelings('');
+                        setMilestoneChanges('');
+                        setTimeout(() => {
+                          setMilestoneModalVisible(true);
+                        }, 500);
+                      }
+                    }
+
+                    await loadStreaks();
                   } catch (error) {
                     console.error('Error saving reflection:', error);
                     showToast('Failed to save reflection', 'error');
@@ -1403,6 +1508,90 @@ function MainAppContent() {
                 className="py-4 bg-zinc-50 rounded-xl items-center mb-10"
               >
                 <Text className="text-zinc-950 text-sm font-bold">Save reflection & Close Day</Text>
+              </TouchableOpacity>
+            </ScrollView>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* MILESTONE REFLECTION MODAL */}
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={milestoneModalVisible}
+        onRequestClose={() => setMilestoneModalVisible(false)}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          className="flex-1 bg-black/85 justify-end"
+        >
+          <View className="bg-[#09090B] rounded-t-[24px] px-5 pt-4 pb-8 h-[85%] border-t border-zinc-900">
+            {/* Sheet Handle */}
+            <View className="w-12 h-1 bg-zinc-800 rounded-full mx-auto mb-5" />
+
+            <View className="items-center mb-6">
+              <Text className="text-4xl mb-2">🎉</Text>
+              <Text className="text-amber-400 text-2xl font-black">{currentMilestoneDay}-Day Checkpoint!</Text>
+              <Text className="text-zinc-500 text-xs font-semibold tracking-wider uppercase mt-1">Unlock Milestone Achievement</Text>
+            </View>
+
+            <ScrollView className="flex-1" showsVerticalScrollIndicator={false}>
+              <Text className="text-zinc-400 text-xs text-center leading-5 mb-6 px-4">
+                Incredible discipline. You have kept your routine alive for {currentMilestoneDay} consecutive days. Let's capture this state of mind.
+              </Text>
+
+              {/* Question 1: Feelings */}
+              <View className="mb-5">
+                <Text className="text-zinc-300 text-sm font-bold mb-2">What do you feel now?</Text>
+                <TextInput
+                  multiline
+                  numberOfLines={3}
+                  className="bg-zinc-950 border border-zinc-900 rounded-xl px-4 py-3 text-zinc-50 text-sm h-24 align-top"
+                  placeholder="I feel more energetic, less restless, and more focused on my long-term build..."
+                  placeholderTextColor="#3F3F46"
+                  value={milestoneFeelings}
+                  onChangeText={setMilestoneFeelings}
+                />
+              </View>
+
+              {/* Question 2: Changes */}
+              <View className="mb-8">
+                <Text className="text-zinc-300 text-sm font-bold mb-2">What are the changes from Day 1 to now?</Text>
+                <TextInput
+                  multiline
+                  numberOfLines={3}
+                  className="bg-zinc-950 border border-zinc-900 rounded-xl px-4 py-3 text-zinc-50 text-sm h-24 align-top"
+                  placeholder="On Day 1 I struggled to start, but now coding and workout routines are automatic habits..."
+                  placeholderTextColor="#3F3F46"
+                  value={milestoneChanges}
+                  onChangeText={setMilestoneChanges}
+                />
+              </View>
+
+              {/* Submit Button */}
+              <TouchableOpacity
+                onPress={async () => {
+                  if (!milestoneFeelings.trim() || !milestoneChanges.trim()) {
+                    showToast('Please share your thoughts for both fields', 'warning');
+                    return;
+                  }
+                  try {
+                    await db.runAsync(
+                      `INSERT INTO milestone_reflections (milestone_day, log_date, feelings_text, changes_text)
+                       VALUES (?, ?, ?, ?);`,
+                      [currentMilestoneDay || 7, selectedDayDateString, milestoneFeelings, milestoneChanges]
+                    );
+                    showToast(`${currentMilestoneDay}-Day Checkpoint recorded! 🔓`, 'success');
+                    setMilestoneModalVisible(false);
+                    await loadStreaks();
+                  } catch (error) {
+                    console.error('Error saving milestone reflection:', error);
+                    showToast('Failed to record checkpoint', 'error');
+                  }
+                }}
+                className="py-4 bg-amber-500 rounded-xl items-center mb-10"
+              >
+                <Text className="text-[#09090B] text-sm font-black">Record Checkpoint & Lock in</Text>
               </TouchableOpacity>
             </ScrollView>
           </View>

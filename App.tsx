@@ -28,7 +28,8 @@ import {
   X,
   Sliders,
   AlertCircle,
-  Activity
+  Activity,
+  Info
 } from 'lucide-react-native';
 
 const DAYS_OF_WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -84,6 +85,59 @@ function MainAppContent() {
   
   // Freeze State
   const [isDayFrozen, setIsDayFrozen] = useState(false);
+
+  // Toast State
+  const [toast, setToast] = useState<{
+    visible: boolean;
+    message: string;
+    type: 'success' | 'info' | 'warning' | 'error';
+  }>({
+    visible: false,
+    message: '',
+    type: 'success',
+  });
+
+  const toastY = useRef(new Animated.Value(-100)).current;
+  const toastOpacity = useRef(new Animated.Value(0)).current;
+  const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showToast = (message: string, type: 'success' | 'info' | 'warning' | 'error' = 'success') => {
+    if (toastTimeoutRef.current) {
+      clearTimeout(toastTimeoutRef.current);
+    }
+
+    setToast({ visible: true, message, type });
+
+    Animated.parallel([
+      Animated.timing(toastY, {
+        toValue: 0,
+        duration: 350,
+        useNativeDriver: true,
+      }),
+      Animated.timing(toastOpacity, {
+        toValue: 1.0,
+        duration: 250,
+        useNativeDriver: true,
+      }),
+    ]).start();
+
+    toastTimeoutRef.current = setTimeout(() => {
+      Animated.parallel([
+        Animated.timing(toastY, {
+          toValue: -100,
+          duration: 300,
+          useNativeDriver: true,
+        }),
+        Animated.timing(toastOpacity, {
+          toValue: 0,
+          duration: 200,
+          useNativeDriver: true,
+        }),
+      ]).start(() => {
+        setToast(prev => ({ ...prev, visible: false }));
+      });
+    }, 2500);
+  };
   
   // Add/Edit Task Form States
   const [editingItemId, setEditingItemId] = useState<number | null>(null);
@@ -209,8 +263,13 @@ function MainAppContent() {
         [task.id, selectedDayDateString, newStatus]
       );
       await loadTasks();
+      showToast(
+        newStatus === 1 ? `Completed: ${task.activity_name}` : `Reset: ${task.activity_name}`, 
+        newStatus === 1 ? 'success' : 'info'
+      );
     } catch (error) {
       console.error('Error toggling task:', error);
+      showToast('Failed to update task', 'error');
     }
   };
 
@@ -230,6 +289,7 @@ function MainAppContent() {
            WHERE id = ?;`,
           [formActivityName, formCategory, timeStart, duration, editingItemId]
         );
+        showToast('Activity updated in blueprint', 'success');
       } else {
         // Create new blueprint item
         await db.runAsync(
@@ -237,6 +297,7 @@ function MainAppContent() {
            VALUES (?, ?, ?, ?, ?);`,
           [selectedDay, timeStart, formActivityName, formCategory, duration]
         );
+        showToast('Activity added to blueprint', 'success');
       }
 
       // Reset form
@@ -248,6 +309,7 @@ function MainAppContent() {
       await loadTasks();
     } catch (error) {
       console.error('Error saving blueprint item:', error);
+      showToast('Failed to save blueprint item', 'error');
     }
   };
 
@@ -257,8 +319,10 @@ function MainAppContent() {
       await db.runAsync(`DELETE FROM master_schedule WHERE id = ?;`, [id]);
       await loadMasterItems();
       await loadTasks();
+      showToast('Activity removed from blueprint', 'warning');
     } catch (error) {
       console.error('Error deleting blueprint item:', error);
+      showToast('Failed to delete blueprint item', 'error');
     }
   };
 
@@ -302,17 +366,20 @@ function MainAppContent() {
           `DELETE FROM day_exceptions WHERE log_date = ? AND exception_type = 'freeze';`,
           [selectedDayDateString]
         );
+        showToast('Day unfrozen. Checklist restored.', 'info');
       } else {
         await db.runAsync(
           `INSERT INTO day_exceptions (log_date, exception_type) VALUES (?, 'freeze');`,
           [selectedDayDateString]
         );
+        showToast('Streak frozen for today! ❄️', 'success');
       }
       await checkIfDayFrozen();
       await loadTasks();
       await loadStreaks();
     } catch (error) {
       console.error('Error toggling freeze day:', error);
+      showToast('Failed to freeze day', 'error');
     }
   };
 
@@ -715,7 +782,9 @@ function MainAppContent() {
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           className="flex-1 bg-black/85 justify-end"
         >
-          <View className="bg-[#09090B] rounded-t-[24px] px-5 pt-6 pb-8 h-[85%] border-t border-zinc-900">
+          <View className="bg-[#09090B] rounded-t-[24px] px-5 pt-4 pb-8 h-[85%] border-t border-zinc-900">
+            {/* Sheet Handle */}
+            <View className="w-12 h-1 bg-zinc-800 rounded-full mx-auto mb-5" />
             {/* Modal Header */}
             <View className="flex-row justify-between items-center mb-5">
               <View>
@@ -867,6 +936,35 @@ function MainAppContent() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+      {/* Toast Notification */}
+      {toast.visible && (
+        <Animated.View
+          style={{
+            transform: [{ translateY: toastY }],
+            opacity: toastOpacity,
+            position: 'absolute',
+            top: Platform.OS === 'ios' ? 55 : 25,
+            left: 20,
+            right: 20,
+            zIndex: 9999,
+          }}
+          className={`flex-row items-center bg-[#121214] border px-4 py-3.5 rounded-2xl shadow-2xl ${
+            toast.type === 'success' ? 'border-emerald-500/30' :
+            toast.type === 'info' ? 'border-blue-500/30' :
+            toast.type === 'warning' ? 'border-amber-500/30' :
+            'border-red-500/30'
+          }`}
+        >
+          {toast.type === 'success' && <Check size={18} color="#10B981" className="mr-3" />}
+          {toast.type === 'info' && <Info size={18} color="#3B82F6" className="mr-3" />}
+          {toast.type === 'warning' && <AlertCircle size={18} color="#F59E0B" className="mr-3" />}
+          {toast.type === 'error' && <AlertCircle size={18} color="#EF4444" className="mr-3" />}
+          
+          <Text className="text-zinc-100 text-xs font-bold flex-1">
+            {toast.message}
+          </Text>
+        </Animated.View>
+      )}
     </View>
   );
 }

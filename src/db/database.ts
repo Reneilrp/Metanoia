@@ -16,6 +16,9 @@ export interface DailyTaskItem {
   category: 'fitness' | 'code' | 'rest' | 'mindset';
   estimated_duration: number;
   is_completed: number; // 0 or 1
+  completed_7: number;
+  completed_30: number;
+  completed_100: number;
 }
 
 /**

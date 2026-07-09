@@ -19,7 +19,7 @@ import {
   DailyTaskItem, 
   MasterScheduleItem 
 } from './src/db/database';
-import { getDateStringForDay, getTaskStatus } from './src/utils/time';
+import { getDateStringForDay, getTaskStatus, calculateStreaks, DayProgress } from './src/utils/time';
 import {
   Check,
   Plus,
@@ -77,6 +77,11 @@ function MainAppContent() {
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [masterItems, setMasterItems] = useState<MasterScheduleItem[]>([]);
   
+  // Streak States
+  const [currentStreak, setCurrentStreak] = useState(0);
+  const [longestStreak, setLongestStreak] = useState(0);
+  const [isStreakPanelExpanded, setIsStreakPanelExpanded] = useState(false);
+  
   // Add/Edit Task Form States
   const [editingItemId, setEditingItemId] = useState<number | null>(null);
   const [formActivityName, setFormActivityName] = useState('');
@@ -102,18 +107,76 @@ function MainAppContent() {
             m.activity_name, 
             m.category, 
             m.estimated_duration, 
-            COALESCE(l.is_completed, 0) as is_completed
+            COALESCE(l.is_completed, 0) as is_completed,
+            (SELECT COUNT(*) FROM progress_logs WHERE schedule_id = m.id AND is_completed = 1 AND log_date >= date(?, '-6 days')) as completed_7,
+            (SELECT COUNT(*) FROM progress_logs WHERE schedule_id = m.id AND is_completed = 1 AND log_date >= date(?, '-29 days')) as completed_30,
+            (SELECT COUNT(*) FROM progress_logs WHERE schedule_id = m.id AND is_completed = 1 AND log_date >= date(?, '-99 days')) as completed_100
          FROM master_schedule m
          LEFT JOIN progress_logs l 
            ON m.id = l.schedule_id 
            AND l.log_date = ?
          WHERE m.day_of_week = ?
          ORDER BY m.time_start ASC;`,
-        [selectedDayDateString, selectedDay]
+        [
+          selectedDayDateString, 
+          selectedDayDateString, 
+          selectedDayDateString, 
+          selectedDayDateString, 
+          selectedDay
+        ]
       );
       setTasks(result);
     } catch (error) {
       console.error('Error loading checklist tasks:', error);
+    }
+  };
+
+  // Load Streaks and Perfect Days
+  const loadStreaks = async () => {
+    try {
+      const todayStr = todayInfo.dateStr;
+      const progressList = await db.getAllAsync<DayProgress>(
+        `WITH RECURSIVE dates(date) AS (
+           VALUES(date(?, '-99 days'))
+           UNION ALL
+           SELECT date(date, '+1 day') FROM dates WHERE date < ?
+         )
+         SELECT 
+           d.date,
+           CASE strftime('%w', d.date)
+             WHEN '0' THEN 'Sun'
+             WHEN '1' THEN 'Mon'
+             WHEN '2' THEN 'Tue'
+             WHEN '3' THEN 'Wed'
+             WHEN '4' THEN 'Thu'
+             WHEN '5' THEN 'Fri'
+             WHEN '6' THEN 'Sat'
+           END as day_of_week,
+           (SELECT COUNT(*) FROM master_schedule WHERE day_of_week = 
+             CASE strftime('%w', d.date)
+               WHEN '0' THEN 'Sun'
+               WHEN '1' THEN 'Mon'
+               WHEN '2' THEN 'Tue'
+               WHEN '3' THEN 'Wed'
+               WHEN '4' THEN 'Thu'
+               WHEN '5' THEN 'Fri'
+               WHEN '6' THEN 'Sat'
+             END
+           ) as total_scheduled,
+           (SELECT COUNT(*) FROM progress_logs l 
+            JOIN master_schedule m ON l.schedule_id = m.id
+            WHERE l.log_date = d.date AND l.is_completed = 1
+           ) as total_completed
+         FROM dates d
+         ORDER BY d.date DESC;`,
+        [todayStr, todayStr]
+      );
+
+      const { currentStreak: curr, longestStreak: long } = calculateStreaks(progressList);
+      setCurrentStreak(curr);
+      setLongestStreak(long);
+    } catch (error) {
+      console.error('Error loading streaks:', error);
     }
   };
 
@@ -219,6 +282,7 @@ function MainAppContent() {
   // Initialize and React to day/date changes
   useEffect(() => {
     loadTasks();
+    loadStreaks();
     if (editModalVisible) {
       loadMasterItems();
     }
@@ -453,6 +517,125 @@ function MainAppContent() {
             );
           })
         )}
+        {/* CONSISTENCY INDEX & STREAKS SECTION */}
+        <View className="mt-6 bg-[#121214] rounded-2xl border border-zinc-900 overflow-hidden">
+          {/* Section Header (Toggleable) */}
+          <TouchableOpacity 
+            activeOpacity={0.8}
+            onPress={() => setIsStreakPanelExpanded(!isStreakPanelExpanded)}
+            className="flex-row items-center justify-between p-4"
+          >
+            <View className="flex-row items-center">
+              <Text className="text-xl mr-2">🔥</Text>
+              <View>
+                <Text className="text-zinc-50 text-sm font-bold">Consistency Index</Text>
+                <Text className="text-zinc-500 text-[11px] font-medium">
+                  Current Streak: {currentStreak} {currentStreak === 1 ? 'day' : 'days'}
+                </Text>
+              </View>
+            </View>
+            <View className="flex-row items-center bg-zinc-900 border border-zinc-800 px-3 py-1.5 rounded-xl">
+              <Text className="text-zinc-400 text-xs font-bold mr-1">Best:</Text>
+              <Text className="text-zinc-50 text-xs font-extrabold">{longestStreak}d</Text>
+            </View>
+          </TouchableOpacity>
+
+          {/* Expanded Streak Metrics */}
+          {isStreakPanelExpanded && (
+            <View className="px-4 pb-4 pt-2 border-t border-zinc-900">
+              <Text className="text-zinc-500 text-[10px] font-bold uppercase tracking-wider mb-3">
+                Task Milestones ({FULL_DAY_NAMES[selectedDay]})
+              </Text>
+
+              {tasks.length === 0 ? (
+                <Text className="text-zinc-600 text-xs text-center py-2">
+                  No tasks planned to track today.
+                </Text>
+              ) : (
+                tasks.map(task => {
+                  const catDetails = getCategoryDetails(task.category);
+                  
+                  // 7 Days progress
+                  const pct7 = Math.min(100, (task.completed_7 / 7) * 100);
+                  // 30 Days progress
+                  const pct30 = Math.min(100, (task.completed_30 / 30) * 100);
+                  // 100 Days progress
+                  const pct100 = Math.min(100, (task.completed_100 / 100) * 100);
+
+                  return (
+                    <View key={`streak-${task.id}`} className="mb-4 bg-zinc-950 p-3 rounded-xl border border-zinc-900">
+                      <View className="flex-row items-center justify-between mb-2">
+                        <Text className="text-zinc-200 text-xs font-bold flex-1 mr-2" numberOfLines={1}>
+                          {task.activity_name}
+                        </Text>
+                        <View className={`px-1.5 py-0.5 rounded ${catDetails.bgClass}`}>
+                          <Text className={`text-[8px] font-black uppercase ${catDetails.textClass}`}>
+                            {task.category}
+                          </Text>
+                        </View>
+                      </View>
+
+                      {/* 7 Day Milestone Row */}
+                      <View className="mb-1.5">
+                        <View className="flex-row justify-between items-center mb-1">
+                          <Text className="text-[10px] text-zinc-500 font-semibold">
+                            7-Day Trust Milestone {task.completed_7 >= 7 ? '🔓' : '🔒'}
+                          </Text>
+                          <Text className="text-[10px] text-zinc-400 font-bold font-mono">
+                            {task.completed_7}/7
+                          </Text>
+                        </View>
+                        <View className="h-1 bg-zinc-900 rounded-full overflow-hidden">
+                          <View 
+                            className="h-full rounded-full" 
+                            style={{ width: `${pct7}%`, backgroundColor: task.completed_7 >= 7 ? '#10B981' : catDetails.color }}
+                          />
+                        </View>
+                      </View>
+
+                      {/* 30 Day Milestone Row */}
+                      <View className="mb-1.5">
+                        <View className="flex-row justify-between items-center mb-1">
+                          <Text className="text-[10px] text-zinc-500 font-semibold">
+                            30-Day Foundation Milestone {task.completed_30 >= 30 ? '🔓' : '🔒'}
+                          </Text>
+                          <Text className="text-[10px] text-zinc-400 font-bold font-mono">
+                            {task.completed_30}/30
+                          </Text>
+                        </View>
+                        <View className="h-1 bg-zinc-900 rounded-full overflow-hidden">
+                          <View 
+                            className="h-full rounded-full" 
+                            style={{ width: `${pct30}%`, backgroundColor: task.completed_30 >= 30 ? '#10B981' : catDetails.color }}
+                          />
+                        </View>
+                      </View>
+
+                      {/* 100 Day Milestone Row */}
+                      <View>
+                        <View className="flex-row justify-between items-center mb-1">
+                          <Text className="text-[10px] text-zinc-500 font-semibold">
+                            100-Day Identity Milestone {task.completed_100 >= 100 ? '🔓' : '🔒'}
+                          </Text>
+                          <Text className="text-[10px] text-zinc-400 font-bold font-mono">
+                            {task.completed_100}/100
+                          </Text>
+                        </View>
+                        <View className="h-1 bg-zinc-900 rounded-full overflow-hidden">
+                          <View 
+                            className="h-full rounded-full" 
+                            style={{ width: `${pct100}%`, backgroundColor: task.completed_100 >= 100 ? '#10B981' : catDetails.color }}
+                          />
+                        </View>
+                      </View>
+
+                    </View>
+                  );
+                })
+              )}
+            </View>
+          )}
+        </View>
       </ScrollView>
 
       {/* EDIT BLUEPRINT MODAL */}

@@ -69,3 +69,69 @@ export const getTaskStatus = (
   
   return { isActive, isPast, percentElapsed };
 };
+
+export interface DayProgress {
+  date: string;
+  day_of_week: string;
+  total_scheduled: number;
+  total_completed: number;
+}
+
+/**
+ * Calculates current and longest streaks based on daily completions over 100 days.
+ * Rest days (0 scheduled tasks) are considered neutral and do not break the streak.
+ */
+export const calculateStreaks = (
+  progressList: DayProgress[]
+): { currentStreak: number; longestStreak: number } => {
+  let currentStreak = 0;
+  let longestStreak = 0;
+  let tempStreak = 0;
+
+  // Calculate longest streak chronologically (oldest to newest, i.e., index N to 0)
+  const chronological = [...progressList].reverse();
+  for (const day of chronological) {
+    const isPerfect = day.total_scheduled > 0 
+      ? day.total_completed === day.total_scheduled 
+      : true; // Neutral rest day
+
+    if (isPerfect) {
+      tempStreak++;
+      if (tempStreak > longestStreak) {
+        longestStreak = tempStreak;
+      }
+    } else {
+      tempStreak = 0;
+    }
+  }
+
+  // Calculate current streak walking backwards from today (today is at index 0)
+  if (progressList.length > 0) {
+    const todayProgress = progressList[0];
+    const isTodayPerfect = todayProgress.total_scheduled > 0 
+      ? todayProgress.total_completed === todayProgress.total_scheduled 
+      : true;
+
+    let startIndex = 0;
+    if (!isTodayPerfect) {
+      // If today is not perfect yet, but we are still in today, the streak is not broken unless yesterday was also not perfect
+      startIndex = 1;
+    }
+
+    for (let i = startIndex; i < progressList.length; i++) {
+      const day = progressList[i];
+      const isPerfect = day.total_scheduled > 0 
+        ? day.total_completed === day.total_scheduled 
+        : true;
+
+      if (isPerfect) {
+        currentStreak++;
+      } else {
+        break; // Streak broken
+      }
+    }
+  }
+
+  return { currentStreak, longestStreak };
+};
+

@@ -49,6 +49,11 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase): Promise<voi
 
     CREATE UNIQUE INDEX IF NOT EXISTS idx_logs_date_schedule 
     ON progress_logs (log_date, schedule_id);
+
+    CREATE TABLE IF NOT EXISTS day_exceptions (
+        log_date TEXT PRIMARY KEY,
+        exception_type TEXT NOT NULL DEFAULT 'freeze'
+    );
   `);
 
   // 2. Guard clause: Check if seeding has already executed previously

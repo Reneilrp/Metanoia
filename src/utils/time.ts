@@ -75,6 +75,7 @@ export interface DayProgress {
   day_of_week: string;
   total_scheduled: number;
   total_completed: number;
+  is_frozen: number; // 0 or 1
 }
 
 /**
@@ -91,9 +92,11 @@ export const calculateStreaks = (
   // Calculate longest streak chronologically (oldest to newest, i.e., index N to 0)
   const chronological = [...progressList].reverse();
   for (const day of chronological) {
-    const isPerfect = day.total_scheduled > 0 
-      ? day.total_completed === day.total_scheduled 
-      : true; // Neutral rest day
+    const isPerfect = day.is_frozen === 1
+      ? true 
+      : day.total_scheduled > 0 
+        ? day.total_completed === day.total_scheduled 
+        : true; // Neutral rest day
 
     if (isPerfect) {
       tempStreak++;
@@ -108,9 +111,11 @@ export const calculateStreaks = (
   // Calculate current streak walking backwards from today (today is at index 0)
   if (progressList.length > 0) {
     const todayProgress = progressList[0];
-    const isTodayPerfect = todayProgress.total_scheduled > 0 
-      ? todayProgress.total_completed === todayProgress.total_scheduled 
-      : true;
+    const isTodayPerfect = todayProgress.is_frozen === 1
+      ? true
+      : todayProgress.total_scheduled > 0 
+        ? todayProgress.total_completed === todayProgress.total_scheduled 
+        : true;
 
     let startIndex = 0;
     if (!isTodayPerfect) {
@@ -120,9 +125,11 @@ export const calculateStreaks = (
 
     for (let i = startIndex; i < progressList.length; i++) {
       const day = progressList[i];
-      const isPerfect = day.total_scheduled > 0 
-        ? day.total_completed === day.total_scheduled 
-        : true;
+      const isPerfect = day.is_frozen === 1
+        ? true
+        : day.total_scheduled > 0 
+          ? day.total_completed === day.total_scheduled 
+          : true;
 
       if (isPerfect) {
         currentStreak++;

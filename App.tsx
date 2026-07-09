@@ -82,6 +82,9 @@ function MainAppContent() {
   const [longestStreak, setLongestStreak] = useState(0);
   const [isStreakPanelExpanded, setIsStreakPanelExpanded] = useState(false);
   
+  // Freeze State
+  const [isDayFrozen, setIsDayFrozen] = useState(false);
+  
   // Add/Edit Task Form States
   const [editingItemId, setEditingItemId] = useState<number | null>(null);
   const [formActivityName, setFormActivityName] = useState('');
@@ -166,7 +169,8 @@ function MainAppContent() {
            (SELECT COUNT(*) FROM progress_logs l 
             JOIN master_schedule m ON l.schedule_id = m.id
             WHERE l.log_date = d.date AND l.is_completed = 1
-           ) as total_completed
+           ) as total_completed,
+           (SELECT COUNT(*) FROM day_exceptions WHERE log_date = d.date AND exception_type = 'freeze') as is_frozen
          FROM dates d
          ORDER BY d.date DESC;`,
         [todayStr, todayStr]
@@ -279,8 +283,42 @@ function MainAppContent() {
     setFormDuration('60');
   };
 
+  const checkIfDayFrozen = async () => {
+    try {
+      const result = await db.getFirstAsync<{ count: number }>(
+        `SELECT COUNT(*) as count FROM day_exceptions WHERE log_date = ? AND exception_type = 'freeze';`,
+        [selectedDayDateString]
+      );
+      setIsDayFrozen((result?.count || 0) > 0);
+    } catch (error) {
+      console.error('Error checking if day is frozen:', error);
+    }
+  };
+
+  const toggleFreezeDay = async () => {
+    try {
+      if (isDayFrozen) {
+        await db.runAsync(
+          `DELETE FROM day_exceptions WHERE log_date = ? AND exception_type = 'freeze';`,
+          [selectedDayDateString]
+        );
+      } else {
+        await db.runAsync(
+          `INSERT INTO day_exceptions (log_date, exception_type) VALUES (?, 'freeze');`,
+          [selectedDayDateString]
+        );
+      }
+      await checkIfDayFrozen();
+      await loadTasks();
+      await loadStreaks();
+    } catch (error) {
+      console.error('Error toggling freeze day:', error);
+    }
+  };
+
   // Initialize and React to day/date changes
   useEffect(() => {
+    checkIfDayFrozen();
     loadTasks();
     loadStreaks();
     if (editModalVisible) {
@@ -317,7 +355,7 @@ function MainAppContent() {
   // Compute tasks completion progress
   const totalTasks = tasks.length;
   const completedTasks = tasks.filter(t => t.is_completed === 1).length;
-  const completionPercentage = totalTasks > 0 ? (completedTasks / totalTasks) : 0;
+  const completionPercentage = isDayFrozen ? 1 : (totalTasks > 0 ? (completedTasks / totalTasks) : 0);
 
   // Animate progress bar
   useEffect(() => {
@@ -357,22 +395,36 @@ function MainAppContent() {
                   year: 'numeric',
                 })}
           </Text>
-          <TouchableOpacity
-            className="bg-zinc-900 w-[38px] h-[38px] rounded-full justify-center items-center border border-zinc-800"
-            onPress={() => {
-              resetEditForm();
-              setEditModalVisible(true);
-            }}
-          >
-            <Sliders size={20} color="#F4F4F5" />
-          </TouchableOpacity>
+          <View className="flex-row items-center">
+            {/* Freeze Button */}
+            <TouchableOpacity
+              className={`w-[38px] h-[38px] rounded-full justify-center items-center border mr-2 ${
+                isDayFrozen 
+                  ? 'bg-blue-500/10 border-blue-500/30' 
+                  : 'bg-zinc-900 border-zinc-800'
+              }`}
+              onPress={toggleFreezeDay}
+            >
+              <Text className="text-sm">{isDayFrozen ? '❄️' : '🧊'}</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              className="bg-zinc-900 w-[38px] h-[38px] rounded-full justify-center items-center border border-zinc-800"
+              onPress={() => {
+                resetEditForm();
+                setEditModalVisible(true);
+              }}
+            >
+              <Sliders size={20} color="#F4F4F5" />
+            </TouchableOpacity>
+          </View>
         </View>
         
         <View className="flex-row items-center justify-between mb-4">
           <Text className="text-zinc-50 text-3xl font-extrabold tracking-tight">{FULL_DAY_NAMES[selectedDay]}</Text>
           <View className="bg-zinc-900 px-2.5 py-1 rounded-xl border border-zinc-800">
             <Text className="text-zinc-50 text-xs font-bold font-mono">
-              {completedTasks}/{totalTasks}
+              {isDayFrozen ? 'FREEZE' : `${completedTasks}/${totalTasks}`}
             </Text>
           </View>
         </View>
@@ -422,7 +474,21 @@ function MainAppContent() {
 
       {/* MAIN CHECKLIST AREA */}
       <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 40, flexGrow: 1 }} showsVerticalScrollIndicator={false}>
-        {tasks.length === 0 ? (
+        {isDayFrozen ? (
+          <View className="flex-1 justify-center items-center py-20 px-10 bg-zinc-950/20 border border-blue-950/25 rounded-3xl mt-2">
+            <Text className="text-4xl mb-4">❄️</Text>
+            <Text className="text-zinc-50 text-lg font-black tracking-tight text-center">Streak Frozen</Text>
+            <Text className="text-zinc-500 text-xs text-center leading-5 mt-2 mb-6">
+              Today is marked as an exception day. Go focus on school, work, or recovery. Your streak is safe!
+            </Text>
+            <TouchableOpacity 
+              onPress={toggleFreezeDay}
+              className="px-6 py-3 bg-blue-500/10 border border-blue-500/30 rounded-xl"
+            >
+              <Text className="text-blue-400 text-xs font-bold">Unfreeze Day</Text>
+            </TouchableOpacity>
+          </View>
+        ) : tasks.length === 0 ? (
           <View className="flex-1 justify-center items-center py-20 px-10">
             <AlertCircle size={40} color="#3F3F46" />
             <Text className="text-zinc-50 text-base font-bold mt-4 mb-2">No Activities Planned</Text>

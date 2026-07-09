@@ -4,19 +4,32 @@
   "main": "index.ts",
   "dependencies": {
     "expo": "~57.0.4",
+    "expo-sqlite": "~57.0.0",
     "expo-status-bar": "~57.0.0",
+    "expo-updates": "~57.0.6",
+    "lucide-react-native": "^1.24.0",
+    "nativewind": "^4.2.6",
     "react": "19.2.3",
-    "react-native": "0.86.0"
+    "react-native": "0.86.0",
+    "react-native-reanimated": "4.5.0",
+    "react-native-safe-area-context": "~5.7.0"
   },
   "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.2",
+    "@types/jest": "^30.0.0",
     "@types/react": "~19.2.2",
+    "jest": "^30.4.2",
+    "postcss": "^8.5.16",
+    "tailwindcss": "^4.3.2",
+    "ts-jest": "^29.4.11",
     "typescript": "~6.0.3"
   },
   "scripts": {
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "test": "jest"
   },
   "private": true
 }

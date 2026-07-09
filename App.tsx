@@ -176,6 +176,7 @@ function MainAppContent() {
   const [milestoneFeelings, setMilestoneFeelings] = useState('');
   const [milestoneChanges, setMilestoneChanges] = useState('');
   const [milestoneReflectionsList, setMilestoneReflectionsList] = useState<MilestoneReflectionItem[]>([]);
+  const [graduatedItems, setGraduatedItems] = useState<MasterScheduleItem[]>([]);
 
   // Toast State
   const [toast, setToast] = useState<{
@@ -258,14 +259,16 @@ function MainAppContent() {
             COALESCE(l.is_completed, 0) as is_completed,
             (SELECT COUNT(*) FROM progress_logs WHERE schedule_id = m.id AND is_completed = 1 AND log_date >= date(?, '-6 days')) as completed_7,
             (SELECT COUNT(*) FROM progress_logs WHERE schedule_id = m.id AND is_completed = 1 AND log_date >= date(?, '-29 days')) as completed_30,
-            (SELECT COUNT(*) FROM progress_logs WHERE schedule_id = m.id AND is_completed = 1 AND log_date >= date(?, '-99 days')) as completed_100
+            (SELECT COUNT(*) FROM progress_logs WHERE schedule_id = m.id AND is_completed = 1 AND log_date >= date(?, '-99 days')) as completed_100,
+            (SELECT COUNT(*) FROM progress_logs WHERE schedule_id = m.id AND is_completed = 1 AND log_date >= date(?, '-364 days')) as completed_365
          FROM master_schedule m
          LEFT JOIN progress_logs l 
            ON m.id = l.schedule_id 
            AND l.log_date = ?
-         WHERE m.day_of_week = ?
+         WHERE m.day_of_week = ? AND m.is_graduated = 0
          ORDER BY m.time_start ASC;`,
         [
+          selectedDayDateString, 
           selectedDayDateString, 
           selectedDayDateString, 
           selectedDayDateString, 
@@ -327,6 +330,7 @@ function MainAppContent() {
       setProgressHistory(progressList);
       await loadRecentReflections();
       await loadMilestones();
+      await loadGraduatedItems();
     } catch (error) {
       console.error('Error loading streaks:', error);
     }
@@ -353,6 +357,40 @@ function MainAppContent() {
       setRecentReflections(result);
     } catch (error) {
       console.error('Error loading reflections:', error);
+    }
+  };
+
+  // Load graduated items (Hall of Identity)
+  const loadGraduatedItems = async () => {
+    try {
+      const result = await db.getAllAsync<MasterScheduleItem>(
+        `SELECT * FROM master_schedule WHERE is_graduated = 1 ORDER BY graduation_date DESC;`
+      );
+      setGraduatedItems(result);
+    } catch (error) {
+      console.error('Error loading graduated items:', error);
+    }
+  };
+
+  // Graduate a routine/task
+  const handleGraduateTask = async (taskId: number, activityName: string) => {
+    try {
+      const todayStr = todayInfo.dateStr;
+      await db.runAsync(
+        `UPDATE master_schedule 
+         SET is_graduated = 1, graduation_date = ? 
+         WHERE id = ?;`,
+        [todayStr, taskId]
+      );
+      showToast(`🎓 ${activityName} graduated to permanent Identity!`, 'success');
+      
+      // Reload states
+      await loadTasks();
+      await loadStreaks();
+      await scheduleAllNotifications(db);
+    } catch (error) {
+      console.error('Error graduating task:', error);
+      showToast('Failed to graduate habit', 'error');
     }
   };
 
@@ -976,6 +1014,41 @@ function MainAppContent() {
                 )}
               </View>
 
+              {/* The Hall of Identity (Graduated Habits) */}
+              <View className="mb-4 bg-zinc-950 p-3.5 rounded-xl border border-zinc-900">
+                <Text className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider mb-2.5">
+                  The Hall of Identity (Graduated)
+                </Text>
+
+                {graduatedItems.length === 0 ? (
+                  <Text className="text-zinc-700 text-xs text-center py-2">
+                    No habits graduated yet. Build consistency to automate your routines.
+                  </Text>
+                ) : (
+                  graduatedItems.map((item) => {
+                    const catDetails = getCategoryDetails(item.category);
+                    return (
+                      <View key={`graduated-${item.id}`} className="flex-row items-center bg-[#09090B] border border-zinc-900 rounded-xl py-3 px-3 mb-2">
+                        <View className="w-8 h-8 rounded-full bg-emerald-500/10 justify-center items-center mr-2.5">
+                          <Text className="text-sm">🎓</Text>
+                        </View>
+                        <View className="flex-1">
+                          <Text className="text-zinc-250 text-sm font-semibold">{item.activity_name}</Text>
+                          <Text className="text-[9px] text-zinc-500 font-bold font-mono uppercase">
+                            Automated on {item.graduation_date}
+                          </Text>
+                        </View>
+                        <View className={`px-2 py-0.5 rounded ${catDetails.bgClass}`}>
+                          <Text className={`text-[8px] font-black uppercase ${catDetails.textClass}`}>
+                            {item.category}
+                          </Text>
+                        </View>
+                      </View>
+                    );
+                  })
+                )}
+              </View>
+
               {/* Identity Milestone Logs */}
               <View className="mb-4 bg-zinc-950 p-3.5 rounded-xl border border-zinc-900">
                 <Text className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider mb-2.5">
@@ -984,7 +1057,7 @@ function MainAppContent() {
 
                 {milestoneReflectionsList.length === 0 ? (
                   <Text className="text-zinc-700 text-xs text-center py-2">
-                    Unlock milestone logs by hitting a 7, 30, or 100-day streak!
+                    Unlock milestone logs by hitting a 7, 30, 100, or 365-day streak!
                   </Text>
                 ) : (
                   milestoneReflectionsList.map((m) => (
@@ -1025,9 +1098,11 @@ function MainAppContent() {
                   const pct7 = Math.min(100, (task.completed_7 / 7) * 100);
                   const pct30 = Math.min(100, (task.completed_30 / 30) * 100);
                   const pct100 = Math.min(100, (task.completed_100 / 100) * 100);
+                  const pct365 = Math.min(100, (task.completed_365 / 365) * 100);
+                  const canGraduate = task.completed_100 >= 100 || task.completed_365 >= 365;
 
                   return (
-                    <View key={`streak-${task.id}`} className="mb-4 bg-zinc-950 p-3 rounded-xl border border-zinc-900">
+                    <View key={`streak-${task.id}`} className="mb-4 bg-zinc-950 p-3.5 rounded-xl border border-zinc-900">
                       <View className="flex-row items-center justify-between mb-2">
                         <Text className="text-zinc-200 text-xs font-bold flex-1 mr-2" numberOfLines={1}>
                           {task.activity_name}
@@ -1076,7 +1151,7 @@ function MainAppContent() {
                       </View>
 
                       {/* 100 Day Milestone */}
-                      <View>
+                      <View className="mb-1.5">
                         <View className="flex-row justify-between items-center mb-1">
                           <Text className="text-[10px] text-zinc-500 font-semibold">
                             100-Day Identity Milestone {task.completed_100 >= 100 ? '🔓' : '🔒'}
@@ -1085,13 +1160,42 @@ function MainAppContent() {
                             {task.completed_100}/100
                           </Text>
                         </View>
-                        <View className="h-1 bg-zinc-900 rounded-full overflow-hidden">
+                        <View className="h-1 bg-[#161618] rounded-full overflow-hidden">
                           <View 
                             className="h-full rounded-full" 
                             style={{ width: `${pct100}%`, backgroundColor: task.completed_100 >= 100 ? '#10B981' : catDetails.color }}
                           />
                         </View>
                       </View>
+
+                      {/* 365 Day Milestone */}
+                      <View className="mb-2">
+                        <View className="flex-row justify-between items-center mb-1">
+                          <Text className="text-[10px] text-zinc-500 font-semibold">
+                            365-Day Mastery Milestone {task.completed_365 >= 365 ? '🔓' : '🔒'}
+                          </Text>
+                          <Text className="text-[10px] text-zinc-400 font-bold font-mono">
+                            {task.completed_365}/365
+                          </Text>
+                        </View>
+                        <View className="h-1 bg-[#161618] rounded-full overflow-hidden">
+                          <View 
+                            className="h-full rounded-full" 
+                            style={{ width: `${pct365}%`, backgroundColor: task.completed_365 >= 365 ? '#10B981' : catDetails.color }}
+                          />
+                        </View>
+                      </View>
+
+                      {/* Graduate Habit CTA */}
+                      {canGraduate && (
+                        <TouchableOpacity
+                          activeOpacity={0.8}
+                          onPress={() => handleGraduateTask(task.id, task.activity_name)}
+                          className="mt-3.5 py-2.5 bg-emerald-500/10 border border-emerald-500/35 rounded-xl items-center flex-row justify-center"
+                        >
+                          <Text className="text-emerald-400 text-xs font-black mr-1">🎓 Graduate Habit to Autopilot</Text>
+                        </TouchableOpacity>
+                      )}
                     </View>
                   );
                 })

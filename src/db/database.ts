@@ -7,6 +7,8 @@ export interface MasterScheduleItem {
   activity_name: string;
   category: 'fitness' | 'code' | 'rest' | 'mindset';
   estimated_duration: number;
+  is_graduated: number; // 0 or 1
+  graduation_date: string | null;
 }
 
 export interface DailyTaskItem {
@@ -19,6 +21,7 @@ export interface DailyTaskItem {
   completed_7: number;
   completed_30: number;
   completed_100: number;
+  completed_365: number;
 }
 
 export interface DailyReflectionItem {
@@ -52,7 +55,9 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase): Promise<voi
         time_start TEXT NOT NULL,
         activity_name TEXT NOT NULL,
         category TEXT NOT NULL,
-        estimated_duration INTEGER DEFAULT 60
+        estimated_duration INTEGER DEFAULT 60,
+        is_graduated INTEGER DEFAULT 0,
+        graduation_date TEXT
     );
 
     CREATE TABLE IF NOT EXISTS progress_logs (
@@ -86,6 +91,18 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase): Promise<voi
         changes_text TEXT
     );
   `);
+
+  // 1.5. Migrate schema if user has an old DB build
+  try {
+    await db.execAsync(`ALTER TABLE master_schedule ADD COLUMN is_graduated INTEGER DEFAULT 0;`);
+  } catch (e) {
+    // Column already exists
+  }
+  try {
+    await db.execAsync(`ALTER TABLE master_schedule ADD COLUMN graduation_date TEXT;`);
+  } catch (e) {
+    // Column already exists
+  }
 
   // 2. Guard clause: Check if seeding has already executed previously
   const checkSeed = await db.getFirstAsync<{ count: number }>(

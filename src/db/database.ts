@@ -90,6 +90,11 @@ export const initializeDatabase = async (db: SQLite.SQLiteDatabase): Promise<voi
         feelings_text TEXT,
         changes_text TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS app_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT
+    );
   `);
 
   // 1.5. Migrate schema if user has an old DB build

@@ -11,9 +11,11 @@ import {
   StatusBar as RNStatusBar,
   KeyboardAvoidingView,
   ActivityIndicator,
+  Switch,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { SQLiteProvider, useSQLiteContext, SQLiteDatabase } from 'expo-sqlite';
+import { useSafeAreaInsets, SafeAreaProvider } from 'react-native-safe-area-context';
 import { 
   initializeDatabase, 
   DailyTaskItem, 
@@ -32,7 +34,15 @@ import {
   Sliders,
   AlertCircle,
   Activity,
-  Info
+  Info,
+  LayoutGrid,
+  Settings,
+  Copy,
+  Bell,
+  Palette,
+  Database,
+  ChevronRight,
+  Flame,
 } from 'lucide-react-native';
 
 const DAYS_OF_WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -53,6 +63,41 @@ const CATEGORIES = [
   { id: 'mindset', name: 'Mindset & Prep', color: '#F59E0B', borderClass: 'border-amber-500', textClass: 'text-amber-500', bgClass: 'bg-amber-500/15' },
 ];
 
+const ACCENTS = {
+  blue: {
+    color: '#3B82F6',
+    borderClass: 'border-blue-500',
+    textClass: 'text-blue-500',
+    bgClass: 'bg-blue-500/15',
+    tabActive: 'text-blue-500',
+    bgHex: '#3B82F6',
+  },
+  emerald: {
+    color: '#10B981',
+    borderClass: 'border-emerald-500',
+    textClass: 'text-emerald-500',
+    bgClass: 'bg-emerald-500/15',
+    tabActive: 'text-emerald-500',
+    bgHex: '#10B981',
+  },
+  violet: {
+    color: '#8B5CF6',
+    borderClass: 'border-violet-500',
+    textClass: 'text-violet-500',
+    bgClass: 'bg-violet-500/15',
+    tabActive: 'text-violet-500',
+    bgHex: '#8B5CF6',
+  },
+  amber: {
+    color: '#F59E0B',
+    borderClass: 'border-amber-500',
+    textClass: 'text-amber-500',
+    bgClass: 'bg-amber-500/15',
+    tabActive: 'text-amber-500',
+    bgHex: '#F59E0B',
+  },
+};
+
 // Notifications Configuration
 Notifications.setNotificationHandler({
   handleNotification: async () => ({
@@ -66,6 +111,23 @@ Notifications.setNotificationHandler({
 
 const scheduleAllNotifications = async (db: SQLiteDatabase) => {
   try {
+    let notificationsEnabled = true;
+    try {
+      const settings = await db.getAllAsync<{ key: string; value: string }>(
+        `SELECT * FROM app_settings WHERE key = 'notificationsEnabled';`
+      );
+      if (settings.length > 0) {
+        notificationsEnabled = settings[0].value === 'true';
+      }
+    } catch (e) {
+      // app_settings table might not exist yet during initial DB creation/migrations
+    }
+
+    if (!notificationsEnabled) {
+      await Notifications.cancelAllScheduledNotificationsAsync();
+      return;
+    }
+
     const { status: existingStatus } = await Notifications.getPermissionsAsync();
     let finalStatus = existingStatus;
     if (existingStatus !== 'granted') {
@@ -121,6 +183,180 @@ const scheduleAllNotifications = async (db: SQLiteDatabase) => {
 function MainAppContent() {
   const db = useSQLiteContext();
 
+  // Tab Navigation State
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'consistency' | 'settings'>('dashboard');
+  const insets = useSafeAreaInsets();
+
+  // App Settings States
+  const [accentColor, setAccentColorState] = useState<'blue' | 'emerald' | 'violet' | 'amber'>('blue');
+  const [transitionDuration, setTransitionDurationState] = useState<number>(60);
+  const [notificationsEnabled, setNotificationsEnabledState] = useState<boolean>(true);
+
+  const currentAccent = ACCENTS[accentColor];
+
+  // Helper functions to load/save settings
+  const loadSettings = async () => {
+    try {
+      const rows = await db.getAllAsync<{ key: string; value: string }>(
+        `SELECT * FROM app_settings;`
+      );
+      rows.forEach(row => {
+        if (row.key === 'accentColor') {
+          setAccentColorState(row.value as any);
+        } else if (row.key === 'transitionDuration') {
+          setTransitionDurationState(parseInt(row.value) || 60);
+        } else if (row.key === 'notificationsEnabled') {
+          setNotificationsEnabledState(row.value === 'true');
+        }
+      });
+    } catch (e) {
+      console.error('Error loading settings:', e);
+    }
+  };
+
+  const updateSetting = async (key: string, value: string) => {
+    try {
+      await db.runAsync(
+        `INSERT INTO app_settings (key, value) VALUES (?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value;`,
+        [key, value]
+      );
+    } catch (e) {
+      console.error('Error saving setting:', e);
+    }
+  };
+
+  // Wrapped state setters that also update the database
+  const setAccentColor = async (color: 'blue' | 'emerald' | 'violet' | 'amber') => {
+    setAccentColorState(color);
+    await updateSetting('accentColor', color);
+  };
+
+  const setTransitionDuration = async (duration: number) => {
+    setTransitionDurationState(duration);
+    await updateSetting('transitionDuration', String(duration));
+  };
+
+  const setNotificationsEnabled = async (enabled: boolean) => {
+    setNotificationsEnabledState(enabled);
+    await updateSetting('notificationsEnabled', String(enabled));
+    if (!enabled) {
+      await Notifications.cancelAllScheduledNotificationsAsync();
+    } else {
+      await scheduleAllNotifications(db);
+    }
+  };
+
+  // Blueprint copy state
+  const [copySourceDay, setCopySourceDay] = useState<string>('Mon');
+
+  // Blueprint copy handler
+  const handleCopyBlueprint = async (targetDay: string) => {
+    if (copySourceDay === targetDay) {
+      showToast('Cannot copy blueprint to the same day', 'warning');
+      return;
+    }
+    try {
+      const sourceItems = await db.getAllAsync<MasterScheduleItem>(
+        `SELECT * FROM master_schedule WHERE day_of_week = ?;`,
+        [copySourceDay]
+      );
+      if (sourceItems.length === 0) {
+        showToast(`No blueprint items found on ${FULL_DAY_NAMES[copySourceDay]}`, 'warning');
+        return;
+      }
+      
+      await db.runAsync(
+        `DELETE FROM master_schedule WHERE day_of_week = ?;`,
+        [targetDay]
+      );
+      
+      for (const item of sourceItems) {
+        await db.runAsync(
+          `INSERT INTO master_schedule (day_of_week, time_start, activity_name, category, estimated_duration, is_graduated, graduation_date)
+           VALUES (?, ?, ?, ?, ?, ?, ?);`,
+          [targetDay, item.time_start, item.activity_name, item.category, item.estimated_duration, item.is_graduated, item.graduation_date]
+        );
+      }
+      showToast(`Copied ${FULL_DAY_NAMES[copySourceDay]} blueprint to ${FULL_DAY_NAMES[targetDay]}!`, 'success');
+      
+      await loadMasterItems();
+      await loadTasks();
+      await scheduleAllNotifications(db);
+    } catch (e) {
+      console.error('Error copying blueprint:', e);
+      showToast('Failed to copy blueprint', 'error');
+    }
+  };
+
+  // Database Reset and Export Handlers
+  const handleResetChecklistHistory = async () => {
+    try {
+      await db.runAsync(`DELETE FROM progress_logs;`);
+      await db.runAsync(`DELETE FROM day_exceptions;`);
+      showToast('Checklist history reset successfully!', 'success');
+      await loadTasks();
+      await loadStreaks();
+    } catch (e) {
+      console.error('Error resetting checklist history:', e);
+      showToast('Failed to reset history', 'error');
+    }
+  };
+
+  const handleFactoryReset = async () => {
+    try {
+      await db.runAsync(`DELETE FROM progress_logs;`);
+      await db.runAsync(`DELETE FROM master_schedule;`);
+      await db.runAsync(`DELETE FROM day_exceptions;`);
+      await db.runAsync(`DELETE FROM daily_reflections;`);
+      await db.runAsync(`DELETE FROM milestone_reflections;`);
+      await db.runAsync(`DELETE FROM app_settings;`);
+      
+      // Re-initialize database with default seeds
+      await initializeDatabase(db);
+      
+      // Reset state variables
+      setAccentColorState('blue');
+      setTransitionDurationState(60);
+      setNotificationsEnabledState(true);
+      setSelectedDay(todayInfo.dayName);
+      
+      showToast('App reset to factory defaults!', 'success');
+      
+      await loadTasks();
+      await loadStreaks();
+      await scheduleAllNotifications(db);
+    } catch (e) {
+      console.error('Error factory resetting app:', e);
+      showToast('Failed to perform factory reset', 'error');
+    }
+  };
+
+  const handleExportData = async () => {
+    try {
+      const schedule = await db.getAllAsync(`SELECT * FROM master_schedule;`);
+      const logs = await db.getAllAsync(`SELECT * FROM progress_logs;`);
+      const reflections = await db.getAllAsync(`SELECT * FROM daily_reflections;`);
+      const milestones = await db.getAllAsync(`SELECT * FROM milestone_reflections;`);
+      const exportPayload = {
+        exportedAt: new Date().toISOString(),
+        schedule,
+        logs,
+        reflections,
+        milestones
+      };
+      
+      console.log('--- METANOIA EXPORTED DATA ---');
+      console.log(JSON.stringify(exportPayload, null, 2));
+      console.log('------------------------------');
+      
+      showToast('Data exported to terminal console!', 'success');
+    } catch (e) {
+      console.error('Error exporting data:', e);
+      showToast('Failed to export data', 'error');
+    }
+  };
+
   // Date and Day Logic
   const getTodayInfo = () => {
     const weekdays = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -158,6 +394,7 @@ function MainAppContent() {
   const [activeTransitionTask, setActiveTransitionTask] = useState<DailyTaskItem | null>(null);
   const [transitionTimeLeft, setTransitionTimeLeft] = useState(60);
   const transitionTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const lastAlertedTaskKeyRef = useRef<string | null>(null);
   const breathAnim = useRef(new Animated.Value(1)).current;
 
   // Daily Reflection States
@@ -409,6 +646,11 @@ function MainAppContent() {
 
   // Toggle checklist complete
   const handleToggle = async (task: DailyTaskItem) => {
+    const isSelectedDayToday = selectedDay === todayInfo.dayName;
+    if (!isSelectedDayToday) {
+      showToast("You can only complete routines on today's schedule!", 'warning');
+      return;
+    }
     try {
       const newStatus = task.is_completed === 1 ? 0 : 1;
       await db.runAsync(
@@ -564,6 +806,11 @@ function MainAppContent() {
     }
   };
 
+  // Load settings on mount
+  useEffect(() => {
+    loadSettings();
+  }, []);
+
   // Initialize and React to day/date changes
   useEffect(() => {
     checkIfDayFrozen();
@@ -596,8 +843,13 @@ function MainAppContent() {
   }, [activeTransitionTask]);
 
   const startTransition = (task: DailyTaskItem) => {
+    const isSelectedDayToday = selectedDay === todayInfo.dayName;
+    if (!isSelectedDayToday) {
+      showToast("You can only start transitions for today's routines!", 'warning');
+      return;
+    }
     setActiveTransitionTask(task);
-    setTransitionTimeLeft(60);
+    setTransitionTimeLeft(transitionDuration);
     
     if (transitionTimerRef.current) {
       clearInterval(transitionTimerRef.current);
@@ -630,6 +882,22 @@ function MainAppContent() {
     }, 30000);
     return () => clearInterval(timer);
   }, []);
+
+  // In-app task notification check
+  useEffect(() => {
+    const hrs = String(currentTime.getHours()).padStart(2, '0');
+    const mins = String(currentTime.getMinutes()).padStart(2, '0');
+    const timeStr = `${hrs}:${mins}`;
+    
+    const matchingTask = tasks.find(t => t.time_start === timeStr && t.is_completed === 0);
+    if (matchingTask) {
+      const lastAlertedKey = `alert_${selectedDayDateString}_${matchingTask.id}`;
+      if (lastAlertedTaskKeyRef.current !== lastAlertedKey) {
+        lastAlertedTaskKeyRef.current = lastAlertedKey;
+        showToast(`⏰ Time for: ${matchingTask.activity_name}`, 'info');
+      }
+    }
+  }, [currentTime, tasks, selectedDayDateString]);
 
   // Pulsing glow animation for active items
   useEffect(() => {
@@ -680,416 +948,432 @@ function MainAppContent() {
     <View className="flex-1 bg-[#09090B]" style={{ paddingTop: platformPadding }}>
       <StatusBar style="light" />
 
-      {/* HEADER SECTION */}
-      <View className="px-5 pt-5 pb-3.5">
-        <View className="flex-row justify-between items-center mb-2">
-          <Text className="text-zinc-500 text-xs font-semibold tracking-widest uppercase">
-            {selectedDayDateString === todayInfo.dateStr
-              ? 'Today'
-              : new Date(selectedDayDateString).toLocaleDateString('en-US', {
-                  month: 'short',
-                  day: 'numeric',
-                  year: 'numeric',
-                })}
-          </Text>
-          <View className="flex-row items-center">
-            {/* Freeze Button */}
-            <TouchableOpacity
-              className={`w-[38px] h-[38px] rounded-full justify-center items-center border mr-2 ${
-                isDayFrozen 
-                  ? 'bg-blue-500/10 border-blue-500/30' 
-                  : 'bg-zinc-900 border-zinc-800'
-              }`}
-              onPress={toggleFreezeDay}
-            >
-              <Text className="text-sm">{isDayFrozen ? '❄️' : '🧊'}</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              className="bg-zinc-900 w-[38px] h-[38px] rounded-full justify-center items-center border border-zinc-800"
-              onPress={() => {
-                resetEditForm();
-                setEditModalVisible(true);
-              }}
-            >
-              <Sliders size={20} color="#F4F4F5" />
-            </TouchableOpacity>
-          </View>
-        </View>
-        
-        <View className="flex-row items-center justify-between mb-4">
-          <Text className="text-zinc-50 text-3xl font-extrabold tracking-tight">{FULL_DAY_NAMES[selectedDay]}</Text>
-          <View className="bg-zinc-900 px-2.5 py-1 rounded-xl border border-zinc-800">
-            <Text className="text-zinc-50 text-xs font-bold font-mono">
-              {isDayFrozen ? 'FREEZE' : `${completedTasks}/${totalTasks}`}
-            </Text>
-          </View>
-        </View>
-
-        {/* Dynamic progress bar */}
-        <View className="h-1 w-full">
-          <View className="h-full bg-zinc-900 rounded-full overflow-hidden">
-            <Animated.View
-              className="h-full rounded-full"
-              style={[
-                {
-                  width: progressAnim.interpolate({
-                    inputRange: [0, 1],
-                    outputRange: ['0%', '100%'],
-                  }),
-                  backgroundColor: completionPercentage === 1 ? '#10B981' : '#3B82F6',
-                },
-              ]}
-            />
-          </View>
-        </View>
-      </View>
-
-      {/* DAY SELECTOR CAPSULES */}
-      <View className="flex-row justify-between px-5 mb-4">
-        {DAYS_OF_WEEK.map(day => {
-          const isSelected = selectedDay === day;
-          const isToday = todayInfo.dayName === day;
-          return (
-            <TouchableOpacity
-              key={day}
-              onPress={() => setSelectedDay(day)}
-              className={`w-11 h-11 rounded-full justify-center items-center relative border ${
-                isSelected ? 'bg-zinc-50 border-zinc-50' : 'bg-[#121214] border-zinc-900'
-              }`}
-            >
-              <Text className={`text-xs font-bold ${isSelected ? 'text-zinc-950' : 'text-zinc-500'}`}>
-                {day}
-              </Text>
-              {isToday && (
-                <View className={`w-1 h-1 rounded-full absolute bottom-1.5 ${isSelected ? 'bg-zinc-950' : 'bg-emerald-500'}`} />
-              )}
-            </TouchableOpacity>
-          );
-        })}
-      </View>
-
-      {/* MAIN CHECKLIST AREA */}
-      <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 40, flexGrow: 1 }} showsVerticalScrollIndicator={false}>
-        {isDayFrozen ? (
-          <View className="flex-1 justify-center items-center py-20 px-10 bg-zinc-950/20 border border-blue-950/25 rounded-3xl mt-2">
-            <Text className="text-4xl mb-4">❄️</Text>
-            <Text className="text-zinc-50 text-lg font-black tracking-tight text-center">Streak Frozen</Text>
-            <Text className="text-zinc-500 text-xs text-center leading-5 mt-2 mb-6">
-              Today is marked as an exception day. Go focus on school, work, or recovery. Your streak is safe!
-            </Text>
-            <TouchableOpacity 
-              onPress={toggleFreezeDay}
-              className="px-6 py-3 bg-blue-500/10 border border-blue-500/30 rounded-xl"
-            >
-              <Text className="text-blue-400 text-xs font-bold">Unfreeze Day</Text>
-            </TouchableOpacity>
-          </View>
-        ) : tasks.length === 0 ? (
-          <View className="flex-1 justify-center items-center py-20 px-10">
-            <AlertCircle size={40} color="#3F3F46" />
-            <Text className="text-zinc-50 text-base font-bold mt-4 mb-2">No Activities Planned</Text>
-            <Text className="text-zinc-500 text-xs text-center leading-5">
-              Tap the adjust icon above to configure your {FULL_DAY_NAMES[selectedDay]} blueprint schedule.
-            </Text>
-          </View>
-        ) : (
-          tasks.map(task => {
-            const { isActive, percentElapsed } = getTaskStatus(task.time_start, task.estimated_duration, currentTime);
-            const isCompleted = task.is_completed === 1;
-            const catDetails = getCategoryDetails(task.category);
-
-            return (
-              <View
-                key={task.id}
-                className={`rounded-2xl mb-3 border overflow-hidden relative flex-row items-center ${
-                  isCompleted 
-                    ? 'opacity-40 border-[#121214] bg-[#0E0E0F]' 
-                    : isActive 
-                      ? 'bg-[#18181C] border-transparent' 
-                      : `bg-[#121214] border-[#1C1C1E] border-l-4 ${catDetails.borderClass}`
-                }`}
-              >
-                {/* Active glow outline */}
-                {isActive && !isCompleted && (
-                  <Animated.View
-                    className="absolute top-0 left-0 right-0 bottom-0 border-2 rounded-2xl z-10"
-                    style={{ borderColor: catDetails.color, opacity: pulseAnim }}
-                    pointerEvents="none"
-                  />
-                )}
-
-                {/* Left Column: Checkbox */}
-                <TouchableOpacity
-                  activeOpacity={0.7}
-                  onPress={() => handleToggle(task)}
-                  className="py-4 pl-4 pr-3 justify-center z-20"
-                >
-                  <View
-                    className={`w-[22px] h-[22px] rounded-full border-2 justify-center items-center ${
-                      isCompleted ? 'border-zinc-800 bg-zinc-800' : catDetails.borderClass
-                    }`}
+      {/* MAIN TAB CONTENT CONTAINER */}
+      <View className="flex-1">
+        {activeTab === 'dashboard' ? (
+          <>
+            {/* HEADER SECTION */}
+            <View className="px-5 pt-5 pb-3.5">
+              <View className="flex-row justify-between items-center mb-2">
+                <Text className="text-zinc-500 text-xs font-semibold tracking-widest uppercase">
+                  {selectedDayDateString === todayInfo.dateStr
+                    ? 'Today'
+                    : new Date(selectedDayDateString).toLocaleDateString('en-US', {
+                        month: 'short',
+                        day: 'numeric',
+                        year: 'numeric',
+                      })}
+                </Text>
+                <View className="flex-row items-center">
+                  {/* Freeze Button */}
+                  <TouchableOpacity
+                    className="w-[38px] h-[38px] rounded-full justify-center items-center border mr-2"
+                    style={{ 
+                      backgroundColor: isDayFrozen ? currentAccent.color + '1a' : '#121214', 
+                      borderColor: isDayFrozen ? currentAccent.color + '4d' : '#1c1c1e' 
+                    }}
+                    onPress={toggleFreezeDay}
                   >
-                    {isCompleted && <Check size={14} color="#000" strokeWidth={3} />}
-                  </View>
-                </TouchableOpacity>
+                    <Text className="text-sm">{isDayFrozen ? '❄️' : '🧊'}</Text>
+                  </TouchableOpacity>
 
-                {/* Middle/Right Column: Text Content & Details */}
-                <TouchableOpacity
-                  activeOpacity={0.85}
-                  onPress={() => {
-                    if (!isCompleted) {
-                      startTransition(task);
-                    } else {
-                      handleToggle(task);
-                    }
-                  }}
-                  className="flex-1 flex-row items-center py-4 pr-4 pl-1 z-20"
+                  <TouchableOpacity
+                    className="bg-zinc-900 w-[38px] h-[38px] rounded-full justify-center items-center border border-zinc-800"
+                    onPress={() => {
+                      resetEditForm();
+                      setEditModalVisible(true);
+                    }}
+                  >
+                    <Sliders size={20} color="#F4F4F5" />
+                  </TouchableOpacity>
+                </View>
+              </View>
+              
+              <View className="flex-row items-center justify-between mb-4">
+                <Text className="text-zinc-50 text-3xl font-extrabold tracking-tight">{FULL_DAY_NAMES[selectedDay]}</Text>
+                <View className="bg-zinc-900 px-2.5 py-1 rounded-xl border border-zinc-800">
+                  <Text className="text-zinc-50 text-xs font-bold font-mono">
+                    {isDayFrozen ? 'FREEZE' : `${completedTasks}/${totalTasks}`}
+                  </Text>
+                </View>
+              </View>
+
+              {/* Dynamic progress bar */}
+              <View className="h-1 w-full">
+                <View className="h-full bg-zinc-900 rounded-full overflow-hidden">
+                  <Animated.View
+                    className="h-full rounded-full"
+                    style={[
+                      {
+                        width: progressAnim.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: ['0%', '100%'],
+                        }),
+                        backgroundColor: completionPercentage === 1 ? '#10B981' : currentAccent.color,
+                      },
+                    ]}
+                  />
+                </View>
+              </View>
+            </View>
+
+            {/* DAY SELECTOR CAPSULES */}
+            <View className="flex-row justify-between px-5 mb-4">
+              {DAYS_OF_WEEK.map(day => {
+                const isSelected = selectedDay === day;
+                const isToday = todayInfo.dayName === day;
+                return (
+                  <TouchableOpacity
+                    key={day}
+                    onPress={() => setSelectedDay(day)}
+                    className={`w-11 h-11 rounded-full justify-center items-center relative border ${
+                      isSelected ? 'bg-zinc-55 border-zinc-55' : 'bg-[#121214] border-zinc-900'
+                    }`}
+                    style={{ 
+                      backgroundColor: isSelected ? currentAccent.color : '#121214',
+                      borderColor: isSelected ? currentAccent.color : '#18181b'
+                    }}
+                  >
+                    <Text className={`text-xs font-bold ${isSelected ? 'text-zinc-950' : 'text-zinc-500'}`}>
+                      {day}
+                    </Text>
+                    {isToday && (
+                      <View className={`w-1 h-1 rounded-full absolute bottom-1.5 ${isSelected ? 'bg-zinc-950' : 'bg-emerald-500'}`} />
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            {/* MAIN CHECKLIST AREA */}
+            <ScrollView contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 40, flexGrow: 1 }} showsVerticalScrollIndicator={false}>
+              {isDayFrozen ? (
+                <View 
+                  className="flex-1 justify-center items-center py-20 px-10 bg-zinc-950/20 border rounded-3xl mt-2"
+                  style={{ borderColor: currentAccent.color + '26' }}
                 >
-                  <View className="flex-1">
-                    <View className="flex-row items-center mb-1">
-                      <Clock size={12} color={isCompleted ? '#71717A' : '#A1A1AA'} className="mr-1" />
-                      <Text className={`text-xs font-bold font-mono ${isCompleted ? 'text-zinc-600' : 'text-zinc-300'}`}>
-                        {task.time_start}
-                      </Text>
-                      <Text className={`text-xs font-medium font-mono ml-1 ${isCompleted ? 'text-zinc-600' : 'text-zinc-500'}`}>
-                        • {task.estimated_duration}m
-                      </Text>
+                  <Text className="text-4xl mb-4">❄️</Text>
+                  <Text className="text-zinc-50 text-lg font-black tracking-tight text-center">Streak Frozen</Text>
+                  <Text className="text-zinc-500 text-xs text-center leading-5 mt-2 mb-6">
+                    Today is marked as an exception day. Go focus on school, work, or recovery. Your streak is safe!
+                  </Text>
+                  <TouchableOpacity 
+                    onPress={toggleFreezeDay}
+                    className="px-6 py-3 rounded-xl border"
+                    style={{ backgroundColor: currentAccent.color + '1a', borderColor: currentAccent.color + '4d' }}
+                  >
+                    <Text className="text-xs font-bold" style={{ color: currentAccent.color }}>Unfreeze Day</Text>
+                  </TouchableOpacity>
+                </View>
+              ) : tasks.length === 0 ? (
+                <View className="flex-1 justify-center items-center py-20 px-10">
+                  <AlertCircle size={40} color="#3F3F46" />
+                  <Text className="text-zinc-50 text-base font-bold mt-4 mb-2">No Activities Planned</Text>
+                  <Text className="text-zinc-500 text-xs text-center leading-5">
+                    Tap the adjust icon above to configure your {FULL_DAY_NAMES[selectedDay]} blueprint schedule.
+                  </Text>
+                </View>
+              ) : (
+                tasks.map(task => {
+                  const { isActive, percentElapsed } = getTaskStatus(task.time_start, task.estimated_duration, currentTime);
+                  const isCompleted = task.is_completed === 1;
+                  const catDetails = getCategoryDetails(task.category);
+
+                  return (
+                    <View
+                      key={task.id}
+                      className={`rounded-2xl mb-3 border overflow-hidden relative flex-row items-center ${
+                        isCompleted 
+                          ? 'opacity-40 border-[#121214] bg-[#0E0E0F]' 
+                          : isActive 
+                            ? 'bg-[#18181C] border-transparent' 
+                            : `bg-[#121214] border-[#1C1C1E] border-l-4 ${catDetails.borderClass}`
+                      }`}
+                    >
+                      {/* Active glow outline */}
                       {isActive && !isCompleted && (
-                        <View className="bg-amber-500 flex-row items-center px-1.5 py-0.5 rounded ml-2">
-                          <Activity size={10} color="#09090B" className="mr-1" />
-                          <Text className="text-[9px] font-black tracking-wide text-zinc-950">ACTIVE</Text>
+                        <Animated.View
+                          className="absolute top-0 left-0 right-0 bottom-0 border-2 rounded-2xl z-10"
+                          style={{ borderColor: catDetails.color, opacity: pulseAnim }}
+                          pointerEvents="none"
+                        />
+                      )}
+
+                      {/* Left Column: Checkbox */}
+                      <TouchableOpacity
+                        activeOpacity={0.7}
+                        onPress={() => handleToggle(task)}
+                        className="py-4 pl-4 pr-3 justify-center z-20"
+                      >
+                        <View
+                          className={`w-[22px] h-[22px] rounded-full border-2 justify-center items-center ${
+                            isCompleted 
+                              ? 'border-zinc-800 bg-zinc-800' 
+                              : (selectedDay === todayInfo.dayName ? catDetails.borderClass : 'border-zinc-800/80')
+                          }`}
+                        >
+                          {isCompleted && <Check size={14} color="#000" strokeWidth={3} />}
+                        </View>
+                      </TouchableOpacity>
+
+                      {/* Middle/Right Column: Text Content & Details */}
+                      <TouchableOpacity
+                        activeOpacity={0.85}
+                        onPress={() => {
+                          if (!isCompleted) {
+                            startTransition(task);
+                          } else {
+                            handleToggle(task);
+                          }
+                        }}
+                        className="flex-1 flex-row items-center py-4 pr-4 pl-1 z-20"
+                      >
+                        <View className="flex-1">
+                          <View className="flex-row items-center mb-1">
+                            <Clock size={12} color={isCompleted ? '#71717A' : '#A1A1AA'} className="mr-1" />
+                            <Text className={`text-xs font-bold font-mono ${isCompleted ? 'text-zinc-600' : 'text-zinc-300'}`}>
+                              {task.time_start}
+                            </Text>
+                            <Text className={`text-xs font-medium font-mono ml-1 ${isCompleted ? 'text-zinc-600' : 'text-zinc-500'}`}>
+                              • {task.estimated_duration}m
+                            </Text>
+                            {isActive && !isCompleted && (
+                              <View className="bg-amber-500 flex-row items-center px-1.5 py-0.5 rounded ml-2">
+                                <Activity size={10} color="#09090B" className="mr-1" />
+                                <Text className="text-[9px] font-black tracking-wide text-zinc-950">ACTIVE</Text>
+                              </View>
+                            )}
+                          </View>
+                          <Text className={`text-zinc-50 text-base font-semibold leading-5 ${isCompleted ? 'line-through text-zinc-500' : ''}`}>
+                            {task.activity_name}
+                          </Text>
+                        </View>
+
+                        {/* Category Badge */}
+                        {!isCompleted && (
+                          <View className={`px-2 py-1 rounded ${catDetails.bgClass}`}>
+                            <Text className={`text-[10px] font-bold uppercase tracking-wider ${catDetails.textClass}`}>
+                              {task.category}
+                            </Text>
+                          </View>
+                        )}
+                      </TouchableOpacity>
+
+                      {/* Active task inner elapsed progress line */}
+                      {isActive && !isCompleted && (
+                        <View className="h-[3px] bg-zinc-800 w-full absolute bottom-0 left-0 right-0" pointerEvents="none">
+                          <View
+                            className="h-full"
+                            style={{ 
+                              width: `${Math.min(100, Math.max(0, percentElapsed))}%`, 
+                              backgroundColor: catDetails.color 
+                            }}
+                          />
                         </View>
                       )}
                     </View>
-                    <Text className={`text-zinc-50 text-base font-semibold leading-5 ${isCompleted ? 'line-through text-zinc-500' : ''}`}>
-                      {task.activity_name}
-                    </Text>
-                  </View>
-
-                  {/* Category Badge */}
-                  {!isCompleted && (
-                    <View className={`px-2 py-1 rounded ${catDetails.bgClass}`}>
-                      <Text className={`text-[10px] font-bold uppercase tracking-wider ${catDetails.textClass}`}>
-                        {task.category}
-                      </Text>
-                    </View>
-                  )}
-                </TouchableOpacity>
-
-                {/* Active task inner elapsed progress line */}
-                {isActive && !isCompleted && (
-                  <View className="h-[3px] bg-zinc-800 w-full absolute bottom-0 left-0 right-0" pointerEvents="none">
-                    <View
-                      className="h-full"
-                      style={{ 
-                        width: `${Math.min(100, Math.max(0, percentElapsed))}%`, 
-                        backgroundColor: catDetails.color 
-                      }}
-                    />
-                  </View>
-                )}
-              </View>
-            );
-          })
-        )}
-        {/* PROFILE, HISTORY & CONSISTENCY SECTION */}
-        <View className="mt-6 bg-[#121214] rounded-2xl border border-zinc-900 overflow-hidden">
-          {/* Section Header (Toggleable) */}
-          <TouchableOpacity 
-            activeOpacity={0.8}
-            onPress={() => setIsStreakPanelExpanded(!isStreakPanelExpanded)}
-            className="flex-row items-center justify-between p-4"
+                  );
+                })
+              )}
+            </ScrollView>
+          </>
+        ) : activeTab === 'consistency' ? (
+          <ScrollView 
+            contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 100, flexGrow: 1 }} 
+            showsVerticalScrollIndicator={false}
+            className="flex-1"
           >
-            <View className="flex-row items-center">
-              <Text className="text-xl mr-2">🔥</Text>
-              <View>
-                <Text className="text-zinc-50 text-sm font-bold">Profile & Consistency</Text>
-                <Text className="text-zinc-500 text-[11px] font-medium">
-                  Current Streak: {currentStreak} {currentStreak === 1 ? 'day' : 'days'}
-                </Text>
+            {/* Consistency Header */}
+            <View className="py-6">
+              <Text className="text-zinc-50 text-3xl font-extrabold tracking-tight">Consistency</Text>
+              <Text className="text-zinc-505 text-xs font-semibold mt-1">Track your streaks, habit graduation, and milestones</Text>
+            </View>
+
+            {/* Streaks Cards */}
+            <View className="flex-row gap-3 mb-4">
+              <View className="flex-1 bg-[#121214] rounded-2xl border border-zinc-900 p-4 items-center">
+                <Text className="text-3xl mb-1">🔥</Text>
+                <Text className="text-zinc-500 text-[10px] font-bold uppercase tracking-wider">Current Streak</Text>
+                <Text className="text-zinc-100 text-2xl font-black mt-1">{currentStreak} {currentStreak === 1 ? 'day' : 'days'}</Text>
+              </View>
+              <View className="flex-1 bg-[#121214] rounded-2xl border border-zinc-900 p-4 items-center">
+                <Text className="text-3xl mb-1">🏆</Text>
+                <Text className="text-zinc-500 text-[10px] font-bold uppercase tracking-wider">Best Streak</Text>
+                <Text className="text-zinc-100 text-2xl font-black mt-1">{longestStreak} days</Text>
               </View>
             </View>
-            <View className="flex-row items-center bg-zinc-900 border border-zinc-800 px-3 py-1.5 rounded-xl">
-              <Text className="text-zinc-400 text-xs font-bold mr-1">Best:</Text>
-              <Text className="text-zinc-50 text-xs font-extrabold">{longestStreak}d</Text>
-            </View>
-          </TouchableOpacity>
 
-          {/* Expanded Profile metrics, 28-day grid, milestones */}
-          {isStreakPanelExpanded && (
-            <View className="px-4 pb-4 pt-2 border-t border-zinc-900">
-              
-              {/* 28-Day Consistency Grid */}
-              <View className="mb-4 bg-zinc-950 p-3.5 rounded-xl border border-zinc-900">
-                <Text className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider mb-2.5">
-                  Consistency Grid (Last 28 Days)
-                </Text>
-                <View className="flex-row flex-wrap justify-start">
-                  {progressHistory.slice(0, 28).reverse().map((day) => {
-                    const isPerfect = day.is_frozen === 1
-                      ? true
-                      : day.total_scheduled > 0 
-                        ? day.total_completed === day.total_scheduled 
-                        : true;
-                    
-                    let colorClass = 'bg-[#161618] border border-zinc-900';
-                    if (day.total_scheduled > 0) {
-                      colorClass = isPerfect ? 'bg-emerald-500 border-transparent' : 'bg-zinc-800 border-transparent';
-                    }
-                    if (day.is_frozen === 1) {
-                      colorClass = 'bg-blue-500 border-transparent';
-                    }
+            {/* 28-Day Consistency Grid */}
+            <View className="mb-4 bg-[#121214] p-4 rounded-2xl border border-zinc-900">
+              <Text className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider mb-2.5">
+                Consistency Grid (Last 28 Days)
+              </Text>
+              <View className="flex-row flex-wrap justify-start">
+                {progressHistory.slice(0, 28).reverse().map((day) => {
+                  const isPerfect = day.is_frozen === 1
+                    ? true
+                    : day.total_scheduled > 0 
+                      ? day.total_completed === day.total_scheduled 
+                      : true;
+                  
+                  let colorClass = 'bg-[#161618] border border-zinc-900';
+                  if (day.total_scheduled > 0) {
+                    colorClass = isPerfect ? 'bg-emerald-500 border-transparent' : 'bg-zinc-800 border-transparent';
+                  }
+                  if (day.is_frozen === 1) {
+                    colorClass = 'bg-blue-500 border-transparent';
+                  }
 
-                    return (
-                      <View 
-                        key={`grid-day-${day.date}`} 
-                        className={`w-6 h-6 rounded-md m-0.5 justify-center items-center ${colorClass}`}
-                      >
-                        {day.is_frozen === 1 && <Text className="text-[8px]">❄</Text>}
-                      </View>
-                    );
-                  })}
-                </View>
-                <View className="flex-row flex-wrap justify-between mt-2.5 px-0.5">
-                  <View className="flex-row items-center mr-2">
-                    <View className="w-2 h-2 rounded bg-emerald-500 mr-1" />
-                    <Text className="text-[8px] text-zinc-500 font-bold">Perfect</Text>
-                  </View>
-                  <View className="flex-row items-center mr-2">
-                    <View className="w-2 h-2 rounded bg-blue-500 mr-1" />
-                    <Text className="text-[8px] text-zinc-500 font-bold">Frozen</Text>
-                  </View>
-                  <View className="flex-row items-center mr-2">
-                    <View className="w-2 h-2 rounded bg-zinc-800 mr-1" />
-                    <Text className="text-[8px] text-zinc-500 font-bold">Failed</Text>
-                  </View>
-                  <View className="flex-row items-center">
-                    <View className="w-2 h-2 rounded bg-[#161618] border border-zinc-900 mr-1" />
-                    <Text className="text-[8px] text-zinc-500 font-bold">Rest</Text>
-                  </View>
-                </View>
-              </View>
-
-              {/* Reflection Journal Log */}
-              <View className="mb-4 bg-zinc-950 p-3.5 rounded-xl border border-zinc-900">
-                <View className="flex-row justify-between items-center mb-2.5">
-                  <Text className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider">
-                    Daily Reflection Log
-                  </Text>
-                  <TouchableOpacity
-                    onPress={() => {
-                      setReflectionFocus(null);
-                      setReflectionEnergy(null);
-                      setReflectionWin('');
-                      setReflectionModalVisible(true);
-                    }}
-                    className="bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded"
-                  >
-                    <Text className="text-[8px] text-zinc-400 font-bold">Reflect</Text>
-                  </TouchableOpacity>
-                </View>
-
-                {recentReflections.length === 0 ? (
-                  <Text className="text-zinc-700 text-xs text-center py-2">
-                    No reflections logged yet. Keep consistency to record your wins!
-                  </Text>
-                ) : (
-                  recentReflections.map((ref) => (
-                    <View key={`log-ref-${ref.log_date}`} className="mb-2 pb-2 border-b border-zinc-900 last:border-b-0">
-                      <View className="flex-row justify-between items-center mb-1">
-                        <Text className="text-[9px] text-zinc-500 font-bold font-mono">{ref.log_date}</Text>
-                        <View className="flex-row items-center">
-                          <Text className="text-[8px] font-bold text-zinc-500 mr-1.5">Focus: {ref.focus_rating === 1 ? '✅' : '❌'}</Text>
-                          <Text className={`text-[7px] font-black uppercase px-1 rounded ${
-                            ref.energy_level === 'high' ? 'bg-blue-500/10 text-blue-400' :
-                            ref.energy_level === 'medium' ? 'bg-amber-500/10 text-amber-400' :
-                            'bg-violet-500/10 text-violet-400'
-                          }`}>{ref.energy_level}</Text>
-                        </View>
-                      </View>
-                      <Text className="text-zinc-400 text-xs italic leading-4">"{ref.win_text || 'Completed.'}"</Text>
+                  return (
+                    <View 
+                      key={`grid-day-${day.date}`} 
+                      className={`w-6 h-6 rounded-md m-0.5 justify-center items-center ${colorClass}`}
+                    >
+                      {day.is_frozen === 1 && <Text className="text-[8px]">❄</Text>}
                     </View>
-                  ))
-                )}
+                  );
+                })}
+              </View>
+              <View className="flex-row flex-wrap justify-between mt-2.5 px-0.5">
+                <View className="flex-row items-center mr-2">
+                  <View className="w-2 h-2 rounded bg-emerald-500 mr-1" />
+                  <Text className="text-[8px] text-zinc-505 font-bold">Perfect</Text>
+                </View>
+                <View className="flex-row items-center mr-2">
+                  <View className="w-2 h-2 rounded bg-blue-500 mr-1" />
+                  <Text className="text-[8px] text-zinc-505 font-bold">Frozen</Text>
+                </View>
+                <View className="flex-row items-center mr-2">
+                  <View className="w-2 h-2 rounded bg-zinc-800 mr-1" />
+                  <Text className="text-[8px] text-zinc-505 font-bold">Failed</Text>
+                </View>
+                <View className="flex-row items-center">
+                  <View className="w-2 h-2 rounded bg-[#161618] border border-zinc-900 mr-1" />
+                  <Text className="text-[8px] text-zinc-505 font-bold">Rest</Text>
+                </View>
+              </View>
+            </View>
+
+            {/* Reflection Journal Log */}
+            <View className="mb-4 bg-[#121214] p-4 rounded-2xl border border-zinc-900">
+              <View className="flex-row justify-between items-center mb-2.5">
+                <Text className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider">
+                  Daily Reflection Log
+                </Text>
+                <TouchableOpacity
+                  onPress={() => {
+                    setReflectionFocus(null);
+                    setReflectionEnergy(null);
+                    setReflectionWin('');
+                    setReflectionModalVisible(true);
+                  }}
+                  className="bg-zinc-900 border border-zinc-800 px-2 py-0.5 rounded"
+                >
+                  <Text className="text-[8px] text-zinc-400 font-bold">Reflect</Text>
+                </TouchableOpacity>
               </View>
 
-              {/* The Hall of Identity (Graduated Habits) */}
-              <View className="mb-4 bg-zinc-950 p-3.5 rounded-xl border border-zinc-900">
-                <Text className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider mb-2.5">
-                  The Hall of Identity (Graduated)
+              {recentReflections.length === 0 ? (
+                <Text className="text-zinc-700 text-xs text-center py-2">
+                  No reflections logged yet. Keep consistency to record your wins!
                 </Text>
-
-                {graduatedItems.length === 0 ? (
-                  <Text className="text-zinc-700 text-xs text-center py-2">
-                    No habits graduated yet. Build consistency to automate your routines.
-                  </Text>
-                ) : (
-                  graduatedItems.map((item) => {
-                    const catDetails = getCategoryDetails(item.category);
-                    return (
-                      <View key={`graduated-${item.id}`} className="flex-row items-center bg-[#09090B] border border-zinc-900 rounded-xl py-3 px-3 mb-2">
-                        <View className="w-8 h-8 rounded-full bg-emerald-500/10 justify-center items-center mr-2.5">
-                          <Text className="text-sm">🎓</Text>
-                        </View>
-                        <View className="flex-1">
-                          <Text className="text-zinc-250 text-sm font-semibold">{item.activity_name}</Text>
-                          <Text className="text-[9px] text-zinc-500 font-bold font-mono uppercase">
-                            Automated on {item.graduation_date}
-                          </Text>
-                        </View>
-                        <View className={`px-2 py-0.5 rounded ${catDetails.bgClass}`}>
-                          <Text className={`text-[8px] font-black uppercase ${catDetails.textClass}`}>
-                            {item.category}
-                          </Text>
-                        </View>
+              ) : (
+                recentReflections.map((ref) => (
+                  <View key={`log-ref-${ref.log_date}`} className="mb-2 pb-2 border-b border-zinc-900 last:border-b-0">
+                    <View className="flex-row justify-between items-center mb-1">
+                      <Text className="text-[9px] text-zinc-505 font-bold font-mono">{ref.log_date}</Text>
+                      <View className="flex-row items-center">
+                        <Text className="text-[8px] font-bold text-zinc-500 mr-1.5">Focus: {ref.focus_rating === 1 ? '✅' : '❌'}</Text>
+                        <Text className={`text-[7px] font-black uppercase px-1 rounded ${
+                          ref.energy_level === 'high' ? 'bg-blue-500/10 text-blue-400' :
+                          ref.energy_level === 'medium' ? 'bg-amber-500/10 text-amber-400' :
+                          'bg-violet-500/10 text-violet-400'
+                        }`}>{ref.energy_level}</Text>
                       </View>
-                    );
-                  })
-                )}
-              </View>
+                    </View>
+                    <Text className="text-zinc-400 text-xs italic leading-4">"{ref.win_text || 'Completed.'}"</Text>
+                  </View>
+                ))
+              )}
+            </View>
 
-              {/* Identity Milestone Logs */}
-              <View className="mb-4 bg-zinc-950 p-3.5 rounded-xl border border-zinc-900">
-                <Text className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider mb-2.5">
-                  Identity Milestone Logs
+            {/* The Hall of Identity (Graduated Habits) */}
+            <View className="mb-4 bg-[#121214] p-4 rounded-2xl border border-zinc-900">
+              <Text className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider mb-2.5">
+                The Hall of Identity (Graduated)
+              </Text>
+
+              {graduatedItems.length === 0 ? (
+                <Text className="text-zinc-700 text-xs text-center py-2">
+                  No habits graduated yet. Build consistency to automate your routines.
                 </Text>
-
-                {milestoneReflectionsList.length === 0 ? (
-                  <Text className="text-zinc-700 text-xs text-center py-2">
-                    Unlock milestone logs by hitting a 7, 30, 100, or 365-day streak!
-                  </Text>
-                ) : (
-                  milestoneReflectionsList.map((m) => (
-                    <View key={`log-milestone-${m.id}`} className="mb-3 pb-3 border-b border-zinc-900 last:border-b-0">
-                      <View className="flex-row justify-between items-center mb-2">
-                        <Text className="text-[10px] font-black text-amber-400">
-                          🔓 {m.milestone_day}-Day Checkpoint
+              ) : (
+                graduatedItems.map((item) => {
+                  const catDetails = getCategoryDetails(item.category);
+                  return (
+                    <View key={`graduated-${item.id}`} className="flex-row items-center bg-[#09090B] border border-zinc-900 rounded-xl py-3 px-3 mb-2">
+                      <View className="w-8 h-8 rounded-full bg-emerald-500/10 justify-center items-center mr-2.5">
+                        <Text className="text-sm">🎓</Text>
+                      </View>
+                      <View className="flex-1">
+                        <Text className="text-zinc-250 text-sm font-semibold">{item.activity_name}</Text>
+                        <Text className="text-[9px] text-zinc-500 font-bold font-mono uppercase">
+                          Automated on {item.graduation_date}
                         </Text>
-                        <Text className="text-[9px] text-zinc-505 font-bold font-mono">{m.log_date}</Text>
                       </View>
-                      
-                      <View className="mb-1.5">
-                        <Text className="text-[9px] text-zinc-500 font-semibold mb-0.5">What I feel now:</Text>
-                        <Text className="text-zinc-350 text-xs italic leading-4">"{m.feelings_text}"</Text>
-                      </View>
-
-                      <View>
-                        <Text className="text-[9px] text-zinc-500 font-semibold mb-0.5">Changes noticed since Day 1:</Text>
-                        <Text className="text-zinc-350 text-xs italic leading-4">"{m.changes_text}"</Text>
+                      <View className={`px-2 py-0.5 rounded ${catDetails.bgClass}`}>
+                        <Text className={`text-[8px] font-black uppercase ${catDetails.textClass}`}>
+                          {item.category}
+                        </Text>
                       </View>
                     </View>
-                  ))
-                )}
-              </View>
+                  );
+                })
+              )}
+            </View>
 
-              {/* Individual Milestones */}
-              <Text className="text-zinc-500 text-[10px] font-bold uppercase tracking-wider mb-2">
+            {/* Identity Milestone Logs */}
+            <View className="mb-4 bg-[#121214] p-4 rounded-2xl border border-zinc-900">
+              <Text className="text-[10px] text-zinc-555 font-bold uppercase tracking-wider mb-2.5">
+                Identity Milestone Logs
+              </Text>
+
+              {milestoneReflectionsList.length === 0 ? (
+                <Text className="text-zinc-700 text-xs text-center py-2">
+                  Unlock milestone logs by hitting a 7, 30, 100, or 365-day streak!
+                </Text>
+              ) : (
+                milestoneReflectionsList.map((m) => (
+                  <View key={`log-milestone-${m.id}`} className="mb-3 pb-3 border-b border-zinc-900 last:border-b-0">
+                    <View className="flex-row justify-between items-center mb-2">
+                      <Text className="text-[10px] font-black text-amber-400">
+                        🔓 {m.milestone_day}-Day Checkpoint
+                      </Text>
+                      <Text className="text-[9px] text-zinc-555 font-bold font-mono">{m.log_date}</Text>
+                    </View>
+                    
+                    <View className="mb-1.5">
+                      <Text className="text-[9px] text-zinc-500 font-semibold mb-0.5">What I feel now:</Text>
+                      <Text className="text-zinc-350 text-xs italic leading-4">"{m.feelings_text}"</Text>
+                    </View>
+
+                    <View>
+                      <Text className="text-[9px] text-zinc-500 font-semibold mb-0.5">Changes noticed since Day 1:</Text>
+                      <Text className="text-zinc-350 text-xs italic leading-4">"{m.changes_text}"</Text>
+                    </View>
+                  </View>
+                ))
+              )}
+            </View>
+
+            {/* Individual Milestones */}
+            <View className="mb-4 bg-[#121214] p-4 rounded-2xl border border-zinc-900">
+              <Text className="text-zinc-550 text-[10px] font-bold uppercase tracking-wider mb-2">
                 Task Milestones ({FULL_DAY_NAMES[selectedDay]})
               </Text>
 
               {tasks.length === 0 ? (
-                <Text className="text-zinc-600 text-xs text-center py-2">
+                <Text className="text-zinc-650 text-xs text-center py-2">
                   No tasks planned to track today.
                 </Text>
               ) : (
@@ -1117,10 +1401,10 @@ function MainAppContent() {
                       {/* 7 Day Milestone */}
                       <View className="mb-1.5">
                         <View className="flex-row justify-between items-center mb-1">
-                          <Text className="text-[10px] text-zinc-500 font-semibold">
+                          <Text className="text-[10px] text-zinc-505 font-semibold">
                             7-Day Trust Milestone {task.completed_7 >= 7 ? '🔓' : '🔒'}
                           </Text>
-                          <Text className="text-[10px] text-zinc-400 font-bold font-mono">
+                          <Text className="text-[10px] text-zinc-404 font-bold font-mono">
                             {task.completed_7}/7
                           </Text>
                         </View>
@@ -1135,10 +1419,10 @@ function MainAppContent() {
                       {/* 30 Day Milestone */}
                       <View className="mb-1.5">
                         <View className="flex-row justify-between items-center mb-1">
-                          <Text className="text-[10px] text-zinc-500 font-semibold">
+                          <Text className="text-[10px] text-zinc-505 font-semibold">
                             30-Day Foundation Milestone {task.completed_30 >= 30 ? '🔓' : '🔒'}
                           </Text>
-                          <Text className="text-[10px] text-zinc-400 font-bold font-mono">
+                          <Text className="text-[10px] text-zinc-404 font-bold font-mono">
                             {task.completed_30}/30
                           </Text>
                         </View>
@@ -1153,10 +1437,10 @@ function MainAppContent() {
                       {/* 100 Day Milestone */}
                       <View className="mb-1.5">
                         <View className="flex-row justify-between items-center mb-1">
-                          <Text className="text-[10px] text-zinc-500 font-semibold">
+                          <Text className="text-[10px] text-zinc-505 font-semibold">
                             100-Day Identity Milestone {task.completed_100 >= 100 ? '🔓' : '🔒'}
                           </Text>
-                          <Text className="text-[10px] text-zinc-400 font-bold font-mono">
+                          <Text className="text-[10px] text-zinc-404 font-bold font-mono">
                             {task.completed_100}/100
                           </Text>
                         </View>
@@ -1171,10 +1455,10 @@ function MainAppContent() {
                       {/* 365 Day Milestone */}
                       <View className="mb-2">
                         <View className="flex-row justify-between items-center mb-1">
-                          <Text className="text-[10px] text-zinc-500 font-semibold">
+                          <Text className="text-[10px] text-zinc-550 font-semibold">
                             365-Day Mastery Milestone {task.completed_365 >= 365 ? '🔓' : '🔒'}
                           </Text>
-                          <Text className="text-[10px] text-zinc-400 font-bold font-mono">
+                          <Text className="text-[10px] text-zinc-404 font-bold font-mono">
                             {task.completed_365}/365
                           </Text>
                         </View>
@@ -1201,9 +1485,236 @@ function MainAppContent() {
                 })
               )}
             </View>
-          )}
-        </View>
-      </ScrollView>
+          </ScrollView>
+        ) : (
+          <ScrollView 
+            contentContainerStyle={{ paddingHorizontal: 20, paddingBottom: 100, flexGrow: 1 }} 
+            showsVerticalScrollIndicator={false}
+            className="flex-1"
+          >
+            {/* Settings Header */}
+            <View className="py-6">
+              <Text className="text-zinc-50 text-3xl font-extrabold tracking-tight">Settings</Text>
+              <Text className="text-zinc-505 text-xs font-semibold mt-1">Configure your habits, transitions, and theme accents</Text>
+            </View>
+
+            {/* SECTION 1: ACCENT COLOR CUSTOMIZATION */}
+            <View className="bg-[#121214] rounded-2xl border border-zinc-900 p-4 mb-4">
+              <View className="flex-row items-center mb-3">
+                <Palette size={18} color={currentAccent.color} className="mr-2" />
+                <Text className="text-zinc-100 text-base font-bold">Theme Accent</Text>
+              </View>
+              <Text className="text-zinc-500 text-xs mb-4">Select the primary accent color used across the app.</Text>
+              <View className="flex-row justify-around">
+                {(['blue', 'emerald', 'violet', 'amber'] as const).map((color) => {
+                  const accent = ACCENTS[color];
+                  const isSelected = accentColor === color;
+                  return (
+                    <TouchableOpacity
+                      key={color}
+                      onPress={() => setAccentColor(color)}
+                      style={{ borderColor: isSelected ? accent.color : 'transparent' }}
+                      className="w-12 h-12 rounded-full border-2 justify-center items-center p-0.5"
+                    >
+                      <View 
+                        style={{ backgroundColor: accent.color }} 
+                        className="w-full h-full rounded-full justify-center items-center"
+                      >
+                        {isSelected && <Check size={18} color="#000" strokeWidth={3} />}
+                      </View>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+
+            {/* SECTION 2: BLUEPRINT TEMPLATE COPY */}
+            <View className="bg-[#121214] rounded-2xl border border-zinc-900 p-4 mb-4">
+              <View className="flex-row items-center mb-3">
+                <Copy size={18} color={currentAccent.color} className="mr-2" />
+                <Text className="text-zinc-100 text-base font-bold">Copy Blueprint Template</Text>
+              </View>
+              <Text className="text-zinc-500 text-xs mb-4">Duplicate the schedule of one day to another to set up your week quickly.</Text>
+              
+              <View className="bg-[#09090B] border border-zinc-900 rounded-xl p-3 mb-3">
+                <Text className="text-zinc-400 text-xs font-semibold mb-2">Source Day to Copy From:</Text>
+                <View className="flex-row justify-between">
+                  {DAYS_OF_WEEK.map(day => (
+                    <TouchableOpacity
+                      key={`src-${day}`}
+                      onPress={() => setCopySourceDay(day)}
+                      className={`px-3 py-1.5 rounded-lg border ${
+                        copySourceDay === day 
+                          ? `${currentAccent.borderClass} ${currentAccent.bgClass}` 
+                          : 'border-zinc-800 bg-zinc-950'
+                      }`}
+                    >
+                      <Text className={`text-xs font-bold ${copySourceDay === day ? currentAccent.textClass : 'text-zinc-500'}`}>
+                        {day}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+
+              <View className="bg-[#09090B] border border-zinc-900 rounded-xl p-3 mb-2">
+                <Text className="text-zinc-400 text-xs font-semibold mb-2">Target Day to Overwrite:</Text>
+                <View className="flex-row flex-wrap justify-start">
+                  {DAYS_OF_WEEK.map(day => (
+                    <TouchableOpacity
+                      key={`target-${day}`}
+                      onPress={() => handleCopyBlueprint(day)}
+                      disabled={copySourceDay === day}
+                      className={`m-1 px-3 py-2 rounded-lg border items-center justify-center ${
+                        copySourceDay === day 
+                          ? 'border-zinc-950 bg-zinc-950/20 opacity-30' 
+                          : 'border-zinc-800 bg-zinc-950'
+                      }`}
+                    >
+                      <Text className={`text-xs font-bold ${copySourceDay === day ? 'text-zinc-700' : 'text-zinc-300'}`}>
+                        To {day}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+            </View>
+
+            {/* SECTION 3: MINDFUL TRANSITION CONFIG */}
+            <View className="bg-[#121214] rounded-2xl border border-zinc-900 p-4 mb-4">
+              <View className="flex-row items-center mb-3">
+                <Clock size={18} color={currentAccent.color} className="mr-2" />
+                <Text className="text-zinc-100 text-base font-bold">Mindful Transition Timer</Text>
+              </View>
+              <Text className="text-zinc-500 text-xs mb-4">Set the length of the deep breathing preparation transition timer when starting a habit.</Text>
+              
+              <View className="flex-row justify-between">
+                {([30, 60, 120, 300] as const).map(seconds => {
+                  const label = seconds >= 60 ? `${seconds / 60}m` : `${seconds}s`;
+                  const isSelected = transitionDuration === seconds;
+                  return (
+                    <TouchableOpacity
+                      key={seconds}
+                      onPress={() => setTransitionDuration(seconds)}
+                      className={`flex-1 mx-1 py-3 rounded-xl border items-center ${
+                        isSelected 
+                          ? `${currentAccent.borderClass} ${currentAccent.bgClass}` 
+                          : 'border-zinc-900 bg-[#09090B]'
+                      }`}
+                    >
+                      <Text className={`text-sm font-bold ${isSelected ? currentAccent.textClass : 'text-zinc-500'}`}>
+                        {label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+
+            {/* SECTION 4: NOTIFICATIONS & REMINDERS */}
+            <View className="bg-[#121214] rounded-2xl border border-zinc-900 p-4 mb-4">
+              <View className="flex-row items-center justify-between mb-2">
+                <View className="flex-row items-center">
+                  <Bell size={18} color={currentAccent.color} className="mr-2" />
+                  <Text className="text-zinc-100 text-base font-bold">App Reminders</Text>
+                </View>
+                <Switch
+                  value={notificationsEnabled}
+                  onValueChange={setNotificationsEnabled}
+                  trackColor={{ false: '#3f3f46', true: currentAccent.color + '66' }}
+                  thumbColor={notificationsEnabled ? currentAccent.color : '#a1a1aa'}
+                />
+              </View>
+              <Text className="text-zinc-500 text-xs leading-5">
+                Receive automatic notifications before scheduled routines. Enabling this triggers daily system alarms based on your blueprint times.
+              </Text>
+            </View>
+
+            {/* SECTION 5: DATA MANAGEMENT & STORAGE */}
+            <View className="bg-[#121214] rounded-2xl border border-zinc-900 p-4 mb-4">
+              <View className="flex-row items-center mb-3">
+                <Database size={18} color={currentAccent.color} className="mr-2" />
+                <Text className="text-zinc-100 text-base font-bold">Data Management</Text>
+              </View>
+              <Text className="text-zinc-500 text-xs mb-4">Manage your SQLite database records and export history logs.</Text>
+              
+              <View className="space-y-2">
+                <TouchableOpacity
+                  onPress={handleExportData}
+                  className="flex-row items-center justify-between bg-[#09090B] border border-zinc-900 rounded-xl p-3.5 mb-2"
+                >
+                  <View>
+                    <Text className="text-zinc-200 text-sm font-bold">Export Logs Console</Text>
+                    <Text className="text-zinc-500 text-[10px] mt-0.5">Dump streaks and checklist database to terminal</Text>
+                  </View>
+                  <ChevronRight size={16} color="#71717A" />
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={handleResetChecklistHistory}
+                  className="flex-row items-center justify-between bg-[#09090B] border border-zinc-900 rounded-xl p-3.5 mb-2"
+                >
+                  <View>
+                    <Text className="text-zinc-200 text-sm font-bold">Clear Checklist History</Text>
+                    <Text className="text-zinc-500 text-[10px] mt-0.5">Reset streaks & logs, but preserve schedule</Text>
+                  </View>
+                  <ChevronRight size={16} color="#71717A" />
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={handleFactoryReset}
+                  className="flex-row items-center justify-between bg-[#09090B] border border-red-950/40 rounded-xl p-3.5"
+                >
+                  <View>
+                    <Text className="text-red-400 text-sm font-bold">Factory Reset App</Text>
+                    <Text className="text-zinc-650 text-[10px] mt-0.5">Wipe all data and restore default routines</Text>
+                  </View>
+                  <ChevronRight size={16} color="#EF4444" />
+                </TouchableOpacity>
+              </View>
+            </View>
+          </ScrollView>
+        )}
+      </View>
+
+      {/* BOTTOM TAB BAR */}
+      <View 
+        className="flex-row bg-[#0E0E0F] border-t border-zinc-900 justify-around items-center px-4"
+        style={{ 
+          paddingBottom: Math.max(insets.bottom, 12),
+          paddingTop: 10,
+        }}
+      >
+        <TouchableOpacity
+          onPress={() => setActiveTab('dashboard')}
+          className="items-center flex-1"
+        >
+          <LayoutGrid size={22} color={activeTab === 'dashboard' ? currentAccent.color : '#71717A'} />
+          <Text className={`text-[10px] font-bold mt-1 ${activeTab === 'dashboard' ? currentAccent.textClass : 'text-zinc-500'}`}>
+            Dashboard
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          onPress={() => setActiveTab('consistency')}
+          className="items-center flex-1"
+        >
+          <Flame size={22} color={activeTab === 'consistency' ? currentAccent.color : '#71717A'} />
+          <Text className={`text-[10px] font-bold mt-1 ${activeTab === 'consistency' ? currentAccent.textClass : 'text-zinc-500'}`}>
+            Consistency
+          </Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          onPress={() => setActiveTab('settings')}
+          className="items-center flex-1"
+        >
+          <Settings size={22} color={activeTab === 'settings' ? currentAccent.color : '#71717A'} />
+          <Text className={`text-[10px] font-bold mt-1 ${activeTab === 'settings' ? currentAccent.textClass : 'text-zinc-500'}`}>
+            Settings
+          </Text>
+        </TouchableOpacity>
+      </View>
 
       {/* EDIT BLUEPRINT MODAL */}
       <Modal
@@ -1392,13 +1903,20 @@ function MainAppContent() {
                   opacity: breathAnim.interpolate({
                     inputRange: [1, 1.3],
                     outputRange: [0.15, 0.4]
-                  })
+                  }),
+                  backgroundColor: currentAccent.color
                 }}
-                className="absolute w-44 h-44 rounded-full bg-blue-500"
+                className="absolute w-44 h-44 rounded-full"
               />
-              <View className="absolute w-36 h-36 rounded-full bg-blue-500/10 border border-blue-500/20" />
-              <View className="w-28 h-28 rounded-full bg-[#09090B] border-2 border-blue-500/40 justify-center items-center">
-                <Text className="text-blue-400 text-3xl font-black font-mono">
+              <View 
+                className="absolute w-36 h-36 rounded-full border" 
+                style={{ backgroundColor: currentAccent.color + '1a', borderColor: currentAccent.color + '33' }}
+              />
+              <View 
+                className="w-28 h-28 rounded-full bg-[#09090B] border-2 justify-center items-center"
+                style={{ borderColor: currentAccent.color + '66' }}
+              >
+                <Text className="text-3xl font-black font-mono" style={{ color: currentAccent.color }}>
                   {String(Math.floor(transitionTimeLeft / 60)).padStart(2, '0')}:
                   {String(transitionTimeLeft % 60).padStart(2, '0')}
                 </Text>
@@ -1423,7 +1941,8 @@ function MainAppContent() {
                   setActiveTransitionTask(null);
                   showToast(`Focus session started for ${activeTransitionTask.activity_name}!`, 'success');
                 }}
-                className="px-6 py-3 rounded-xl bg-blue-500"
+                className="px-6 py-3 rounded-xl"
+                style={{ backgroundColor: currentAccent.color }}
               >
                 <Text className="text-[#09090B] text-xs font-bold">Skip Timer & Start</Text>
               </TouchableOpacity>
@@ -1737,17 +2256,19 @@ function MainAppContent() {
 
 export default function App() {
   return (
-    <View style={{ flex: 1, backgroundColor: '#09090B' }}>
-      <Suspense fallback={
-        <View className="flex-1 justify-center items-center bg-[#09090B]">
-          <ActivityIndicator size="large" color="#3B82F6" />
-          <Text className="text-zinc-400 mt-3 text-sm font-medium">Initializing Metanoia...</Text>
-        </View>
-      }>
-        <SQLiteProvider databaseName="metanoia.db" onInit={initializeDatabase} useSuspense={true}>
-          <MainAppContent />
-        </SQLiteProvider>
-      </Suspense>
-    </View>
+    <SafeAreaProvider>
+      <View style={{ flex: 1, backgroundColor: '#09090B' }}>
+        <Suspense fallback={
+          <View className="flex-1 justify-center items-center bg-[#09090B]">
+            <ActivityIndicator size="large" color="#3B82F6" />
+            <Text className="text-zinc-400 mt-3 text-sm font-medium">Initializing Metanoia...</Text>
+          </View>
+        }>
+          <SQLiteProvider databaseName="metanoia.db" onInit={initializeDatabase} useSuspense={true}>
+            <MainAppContent />
+          </SQLiteProvider>
+        </Suspense>
+      </View>
+    </SafeAreaProvider>
   );
 }

@@ -1,0 +1,136 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                    String            @id @default(uuid())
+  email                 String            @unique
+  passwordHash          String
+  displayName           String?
+  avatarUrl             String?
+  timezone              String            @default("UTC")
+  subscriptionTier      String            @default("free") // "free" | "pro_monthly" | "pro_annual"
+  subscriptionExpiresAt DateTime?
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+
+  habits             Habit[]
+  habitCompletions   HabitCompletion[]
+  reflections        Reflection[]
+  tombstones         SyncTombstone[]
+  circleMemberships  CircleMember[]
+  reactionsSent      CircleReaction[]  @relation("ReactionsSent")
+  reactionsReceived  CircleReaction[]  @relation("ReactionsReceived")
+}
+
+model Habit {
+  id            String            @id @default(uuid())
+  userId        String
+  name          String
+  description   String?
+  color         String            @default("#6366f1")
+  icon          String            @default("star")
+  frequencyType String            @default("daily")
+  targetCount   Int               @default(1)
+  archivedAt    DateTime?
+  version       Int               @default(1)
+  deletedAt     DateTime?
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  user        User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  completions HabitCompletion[]
+
+  @@index([userId, updatedAt])
+}
+
+model HabitCompletion {
+  id            String    @id @default(uuid())
+  habitId       String
+  userId        String
+  completedDate String    // YYYY-MM-DD
+  value         Int       @default(1)
+  notes         String?
+  deletedAt     DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  habit Habit @relation(fields: [habitId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([habitId, completedDate])
+  @@index([userId, updatedAt])
+}
+
+model Reflection {
+  id           String    @id @default(uuid())
+  userId       String
+  title        String?
+  content      String
+  moodRating   Int?      // 1 - 5
+  audioFileUrl String?
+  deletedAt    DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, updatedAt])
+}
+
+model SyncTombstone {
+  id        String   @id @default(uuid())
+  userId    String
+  tableName String   // "habits" | "habit_completions" | "reflections"
+  recordId  String
+  deletedAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, deletedAt])
+}
+
+model Circle {
+  id          String         @id @default(uuid())
+  name        String
+  description String?
+  inviteCode  String         @unique
+  createdById String
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  members   CircleMember[]
+  reactions CircleReaction[]
+}
+
+model CircleMember {
+  id       String   @id @default(uuid())
+  circleId String
+  userId   String
+  joinedAt DateTime @default(now())
+
+  circle Circle @relation(fields: [circleId], references: [id], onDelete: Cascade)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([circleId, userId])
+}
+
+model CircleReaction {
+  id         String   @id @default(uuid())
+  circleId   String
+  senderId   String
+  receiverId String
+  emoji      String   // '🔥' | '💪' | '☕' | '🙌'
+  createdAt  DateTime @default(now())
+
+  circle   Circle @relation(fields: [circleId], references: [id], onDelete: Cascade)
+  sender   User   @relation("ReactionsSent", fields: [senderId], references: [id], onDelete: Cascade)
+  receiver User   @relation("ReactionsReceived", fields: [receiverId], references: [id], onDelete: Cascade)
+
+  @@index([circleId, createdAt])
+}

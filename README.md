@@ -1,99 +1,67 @@
 # 🚀 Metanoia: Habit & Productivity App with AI Coaching
 
-> A full-stack, offline-first habit tracking ecosystem powered by an empathetic **Gemini AI Coach**, multi-modal **Voice Journaling**, and non-toxic **Accountability Circles**.
+> A thoughtful, offline-first habit tracking ecosystem powered by an empathetic **Gemini AI Coach**, multi-modal **Voice Journaling**, and non-toxic **Accountability Circles**.
+
+Welcome to **Metanoia**! Metanoia is designed to help you build sustainable daily habits without guilt or burnout. Grounded in Cognitive Behavioral Therapy (CBT) and BJ Fogg's *Tiny Habits* methodology, Metanoia treats skipped days as valuable data points rather than moral failures.
 
 ---
 
-## 🏗️ Architecture & Phased Implementation Status
+## ✨ What You Can Do with Metanoia
 
-| Phase | Description | Status | Verification |
-| :--- | :--- | :---: | :--- |
-| **Phase 1** | **Cloud & Sync Foundation**: JWT Auth, SQLite/PostgreSQL Prisma schema, LWW offline sync engine, mobile sync badge. | ✅ **Complete** | E2E Tests Passing |
-| **Phase 2** | **Gemini AI Coach Engine**: Dual-mode architecture (Live Gemini 1.5 Flash vs Quota-Safe Local CBT Engine), Streak Rescue, Weekly Retrospectives. | ✅ **Complete** | E2E Tests Passing |
-| **Phase 3** | **Voice & Multi-Modal Insights**: Audio recording (`expo-av`), automated transcription, psychological sentiment extraction, audio coach briefings. | ✅ **Complete** | E2E Tests Passing |
-| **Phase 4** | **Social, Monetization & Store Launch**: Accountability Circles (invite codes, reactions), Pro paywall modal, GDPR data export, health disclaimers, EAS build config. | ✅ **Complete** | E2E Tests Passing |
+* 📱 **Frictionless Daily Tracking**: Check off habits with instant offline support. Whether you are on an airplane or deep in the subway, your progress is tracked locally and automatically syncs when you reconnect.
+* 🧠 **Empathetic AI Coach**: Chat with an AI mentor trained to eliminate guilt. If you break a streak, the AI Coach generates a **Streak Rescue**—a bite-sized, 2-minute version of your habit to get you back on track without stress.
+* 🎙️ **Voice Journaling & Audio Briefings**: Speak your mind instead of typing. Record daily reflections, automatically analyze emotional sentiment, and listen to spoken coach briefings.
+* 👥 **Accountability Circles**: Share your journey with trusted friends using invite codes. Send and receive supportive emoji cheers without toxic competition or vanity metrics.
+* 🔒 **Privacy-First & Data Ownership**: Export your complete data footprint at any time with a single tap (GDPR-compliant) or delete your account whenever you choose.
 
 ---
 
-## 📁 Repository Layout
+## ⚡ Quick Start: Running Metanoia
 
+### Prerequisites
+* [Node.js](https://nodejs.org/) (v18+ recommended)
+* npm, yarn, or pnpm
+* [Expo Go](https://expo.dev/go) app on your iOS or Android device (or run directly in your web browser)
+
+---
+
+### 1. Start the Backend API
+The backend provides user authentication, cross-device sync, and AI coaching services:
+
+```bash
+cd backend
+npm install
+npm run start:dev
 ```
-metanoia/
-├── backend/
-│   ├── prisma/
-│   │   └── schema.prisma        # User, Habit, Completion, Reflection, Tombstone, Circle, Reaction
-│   ├── src/
-│   │   ├── auth/                # JWT strategy, guards, register, login, profile
-│   │   ├── sync/                # Push/pull offline-first synchronization protocol
-│   │   ├── habits/              # Check-in toggling, streak counters, date filters
-│   │   ├── ai/                  # Gemini 1.5 Flash + Local CBT Fallback Coach
-│   │   ├── voice/               # Multimodal STT, sentiment analysis, audio briefings
-│   │   ├── circles/             # Accountability Circles, invite codes, emoji cheers
-│   │   └── users/               # Pro subscription gating, GDPR JSON export, self-deletion
-│   ├── test/                    # 21 comprehensive E2E integration test suites
-│   ├── docker-compose.yml       # PostgreSQL 16 & Redis 7 container orchestration
-│   └── .env                     # Database URL, JWT secrets, Gemini toggle
-│
-└── frontend/
-    ├── app/
-    │   ├── (tabs)/
-    │   │   ├── index.tsx        # Today Dashboard: Habit list, check-in, sync status badge
-    │   │   ├── two.tsx          # AI Coach: Interactive chat, streak rescue, audio briefings
-    │   │   └── profile.tsx      # Cloud sync, Pro subscription, Circles, GDPR export
-    │   └── _layout.tsx          # Root AuthProvider & theme setup
-    ├── components/
-    │   ├── SyncBadge.tsx        # Real-time online/offline sync status indicator
-    │   ├── VoiceRecorderModal.tsx # Voice recording with timer & automatic sentiment extraction
-    │   ├── PaywallModal.tsx     # Metanoia Pro upgrade screen (Monthly/Annual billing)
-    │   └── CirclesModal.tsx     # Accountability Circles feed & reaction cheering
-    ├── services/
-    │   ├── apiClient.ts         # Cross-platform HTTP client (Android 10.0.2.2 / iOS / Web)
-    │   ├── localStorage.ts      # Offline change-tracking repository (synced/created/updated/deleted)
-    │   ├── syncEngine.ts        # NetInfo network-aware bidirectional sync worker
-    │   ├── aiService.ts         # AI coach chat, streak rescue, and weekly review API
-    │   ├── voiceService.ts      # Voice recording transcription & briefing synthesis
-    │   └── socialService.ts     # Circle creation, joining, and emoji reaction API
-    ├── eas.json                 # Expo Application Services build & App Store submission config
-    └── app.json                 # iOS & Android bundle IDs, microphone permissions, icons
+The API server will start on `http://localhost:3000/api/v1`.
+
+---
+
+### 2. Start the Mobile / Web App
+Launch the Expo development server:
+
+```bash
+cd frontend
+npm install
+npm start
 ```
 
+* **To run on your phone**: Open the **Expo Go** app on your phone and scan the QR code displayed in your terminal.
+* **To run in your web browser**: Press <kbd>w</kbd> in the terminal.
+* **To run on an emulator**: Press <kbd>a</kbd> for Android or <kbd>i</kbd> for iOS simulator.
+
 ---
 
-## 🔑 AI Coach Dual-Mode Configuration
+## 🔑 AI Coach Configuration
 
-The AI Coach is configured with a **quota-safe dual-mode switch** in `backend/.env`:
+Metanoia comes with a **quota-safe dual-mode switch** in `backend/.env`:
 
 ```env
-# Disabled by default: Zero external API calls, preserves your Gemini quota for other projects
+# Set to 'true' to enable live Google Gemini, or 'false' for local offline engine
 AI_COACH_ENABLED=false
-GEMINI_API_KEY=""
+GEMINI_API_KEY="your-gemini-api-key-here"
 GEMINI_MODEL="gemini-1.5-flash"
 ```
 
-* **When Disabled (`false`)**: Uses the built-in, science-backed **Local CBT & Tiny Habits Engine**. Responses, streak rescues, and weekly reviews are generated locally without consuming any API quota.
-* **When Enabled (`true`)**: Connects seamlessly to live **Google Gemini 1.5 Flash** using the `@google/genai` SDK.
-
----
-
-## ⚡ Quick Start Guide
-
-### 1. Launch Backend API
-```powershell
-cd "C:\Users\ASUS TUF A5\metanoia\backend"
-npm run start:dev
-```
-API runs on: `http://localhost:3000/api/v1`
-
-### 2. Run Backend E2E Tests (21/21 Passing)
-```powershell
-cd "C:\Users\ASUS TUF A5\metanoia\backend"
-npm run test:e2e
-```
-
-### 3. Launch Expo Mobile Frontend
-```powershell
-cd "C:\Users\ASUS TUF A5\metanoia\frontend"
-npm run start
-```
-* Press `w` to open in browser (Web).
-* Scan QR code with Expo Go on iOS or Android.
+* **Local Fallback Mode (`false`)**: Zero external API calls. Uses a built-in, science-backed CBT engine to provide instant advice, streak rescues, and weekly reviews completely free without an API key.
+* **Live Gemini Mode (`true`)**: Connects to **Google Gemini 1.5 Flash** for real-time conversational streaming and deep psychological reflections.

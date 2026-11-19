@@ -81,7 +81,7 @@ export class UsersService {
       throw new NotFoundException('User not found');
     }
 
-    const { passwordHash, ...safeUserData } = user;
+    const { passwordHash: _passwordHash, ...safeUserData } = user;
 
     return {
       exportDate: new Date().toISOString(),

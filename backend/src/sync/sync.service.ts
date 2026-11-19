@@ -14,39 +14,43 @@ export class SyncService {
     return this.prisma.$transaction(async (tx) => {
       // 1. Process Habits
       if (dto.habits && dto.habits.length > 0) {
-        for (const habit of dto.habits) {
-          const existing = await tx.habit.findUnique({
-            where: { id: habit.id },
-          });
+        const habitIds = dto.habits.map((h) => h.id);
+        const existingHabits = await tx.habit.findMany({
+          where: { id: { in: habitIds } },
+        });
+        const existingMap = new Map(existingHabits.map((h) => [h.id, h]));
 
+        const toCreate: any[] = [];
+        const toUpdate: Array<{ id: string; data: any }> = [];
+
+        for (const habit of dto.habits) {
+          const existing = existingMap.get(habit.id);
           const clientUpdatedAt = habit.updatedAt ? new Date(habit.updatedAt) : now;
           const clientCreatedAt = habit.createdAt ? new Date(habit.createdAt) : now;
           const archivedAt = habit.archivedAt ? new Date(habit.archivedAt) : null;
           const deletedAt = habit.deletedAt ? new Date(habit.deletedAt) : null;
 
           if (!existing) {
-            await tx.habit.create({
-              data: {
-                id: habit.id,
-                userId,
-                name: habit.name,
-                description: habit.description || null,
-                color: habit.color || '#6366f1',
-                icon: habit.icon || 'star',
-                frequencyType: habit.frequencyType || 'daily',
-                targetCount: habit.targetCount || 1,
-                version: habit.version || 1,
-                archivedAt,
-                deletedAt,
-                createdAt: clientCreatedAt,
-                updatedAt: clientUpdatedAt,
-              },
+            toCreate.push({
+              id: habit.id,
+              userId,
+              name: habit.name,
+              description: habit.description || null,
+              color: habit.color || '#6366f1',
+              icon: habit.icon || 'star',
+              frequencyType: habit.frequencyType || 'daily',
+              targetCount: habit.targetCount || 1,
+              version: habit.version || 1,
+              archivedAt,
+              deletedAt,
+              createdAt: clientCreatedAt,
+              updatedAt: clientUpdatedAt,
             });
           } else if (existing.userId === userId) {
             // Last-Write-Wins: only apply if incoming change is newer or higher version
             if (!existing.updatedAt || clientUpdatedAt >= existing.updatedAt) {
-              await tx.habit.update({
-                where: { id: habit.id },
+              toUpdate.push({
+                id: habit.id,
                 data: {
                   name: habit.name,
                   description: habit.description ?? existing.description,
@@ -63,107 +67,121 @@ export class SyncService {
             }
           }
         }
+
+        if (toCreate.length > 0) {
+          await tx.habit.createMany({ data: toCreate });
+        }
+        if (toUpdate.length > 0) {
+          await Promise.all(
+            toUpdate.map((u) => tx.habit.update({ where: { id: u.id }, data: u.data })),
+          );
+        }
       }
 
       // 2. Process Habit Completions
       if (dto.habitCompletions && dto.habitCompletions.length > 0) {
-        for (const completion of dto.habitCompletions) {
-          const clientUpdatedAt = completion.updatedAt ? new Date(completion.updatedAt) : now;
-          const clientCreatedAt = completion.createdAt ? new Date(completion.createdAt) : now;
-          const deletedAt = completion.deletedAt ? new Date(completion.deletedAt) : null;
+        await Promise.all(
+          dto.habitCompletions.map((completion) => {
+            const clientUpdatedAt = completion.updatedAt ? new Date(completion.updatedAt) : now;
+            const clientCreatedAt = completion.createdAt ? new Date(completion.createdAt) : now;
+            const deletedAt = completion.deletedAt ? new Date(completion.deletedAt) : null;
 
-          await tx.habitCompletion.upsert({
-            where: {
-              habitId_completedDate: {
-                habitId: completion.habitId,
-                completedDate: completion.completedDate,
+            return tx.habitCompletion.upsert({
+              where: {
+                habitId_completedDate: {
+                  habitId: completion.habitId,
+                  completedDate: completion.completedDate,
+                },
               },
-            },
-            create: {
-              id: completion.id,
-              habitId: completion.habitId,
-              userId,
-              completedDate: completion.completedDate,
-              value: completion.value ?? 1,
-              notes: completion.notes || null,
-              deletedAt,
-              createdAt: clientCreatedAt,
-              updatedAt: clientUpdatedAt,
-            },
-            update: {
-              value: completion.value ?? 1,
-              notes: completion.notes ?? undefined,
-              deletedAt,
-              updatedAt: clientUpdatedAt,
-            },
-          });
-        }
+              create: {
+                id: completion.id,
+                habitId: completion.habitId,
+                userId,
+                completedDate: completion.completedDate,
+                value: completion.value ?? 1,
+                notes: completion.notes || null,
+                deletedAt,
+                createdAt: clientCreatedAt,
+                updatedAt: clientUpdatedAt,
+              },
+              update: {
+                value: completion.value ?? 1,
+                notes: completion.notes ?? undefined,
+                deletedAt,
+                updatedAt: clientUpdatedAt,
+              },
+            });
+          }),
+        );
       }
 
       // 3. Process Reflections
       if (dto.reflections && dto.reflections.length > 0) {
-        for (const reflection of dto.reflections) {
-          const clientUpdatedAt = reflection.updatedAt ? new Date(reflection.updatedAt) : now;
-          const clientCreatedAt = reflection.createdAt ? new Date(reflection.createdAt) : now;
-          const deletedAt = reflection.deletedAt ? new Date(reflection.deletedAt) : null;
+        await Promise.all(
+          dto.reflections.map((reflection) => {
+            const clientUpdatedAt = reflection.updatedAt ? new Date(reflection.updatedAt) : now;
+            const clientCreatedAt = reflection.createdAt ? new Date(reflection.createdAt) : now;
+            const deletedAt = reflection.deletedAt ? new Date(reflection.deletedAt) : null;
 
-          await tx.reflection.upsert({
-            where: { id: reflection.id },
-            create: {
-              id: reflection.id,
-              userId,
-              title: reflection.title || null,
-              content: reflection.content,
-              moodRating: reflection.moodRating ?? null,
-              audioFileUrl: reflection.audioFileUrl || null,
-              deletedAt,
-              createdAt: clientCreatedAt,
-              updatedAt: clientUpdatedAt,
-            },
-            update: {
-              title: reflection.title ?? undefined,
-              content: reflection.content,
-              moodRating: reflection.moodRating ?? undefined,
-              audioFileUrl: reflection.audioFileUrl ?? undefined,
-              deletedAt,
-              updatedAt: clientUpdatedAt,
-            },
-          });
-        }
+            return tx.reflection.upsert({
+              where: { id: reflection.id },
+              create: {
+                id: reflection.id,
+                userId,
+                title: reflection.title || null,
+                content: reflection.content,
+                moodRating: reflection.moodRating ?? null,
+                audioFileUrl: reflection.audioFileUrl || null,
+                deletedAt,
+                createdAt: clientCreatedAt,
+                updatedAt: clientUpdatedAt,
+              },
+              update: {
+                title: reflection.title ?? undefined,
+                content: reflection.content,
+                moodRating: reflection.moodRating ?? undefined,
+                audioFileUrl: reflection.audioFileUrl ?? undefined,
+                deletedAt,
+                updatedAt: clientUpdatedAt,
+              },
+            });
+          }),
+        );
       }
 
       // 4. Process Tombstones (Explicit Deletions)
       if (dto.tombstones && dto.tombstones.length > 0) {
-        for (const tombstone of dto.tombstones) {
-          const deletedAt = tombstone.deletedAt ? new Date(tombstone.deletedAt) : now;
+        const tombstoneData = dto.tombstones.map((tombstone) => ({
+          userId,
+          tableName: tombstone.tableName,
+          recordId: tombstone.recordId,
+          deletedAt: tombstone.deletedAt ? new Date(tombstone.deletedAt) : now,
+        }));
 
-          await tx.syncTombstone.create({
-            data: {
-              userId,
-              tableName: tombstone.tableName,
-              recordId: tombstone.recordId,
-              deletedAt,
-            },
-          });
+        await tx.syncTombstone.createMany({ data: tombstoneData });
 
-          // Soft delete corresponding record
-          if (tombstone.tableName === 'habits') {
-            await tx.habit.updateMany({
-              where: { id: tombstone.recordId, userId },
-              data: { deletedAt, updatedAt: now },
-            });
-          } else if (tombstone.tableName === 'habit_completions') {
-            await tx.habitCompletion.updateMany({
-              where: { id: tombstone.recordId, userId },
-              data: { deletedAt, updatedAt: now },
-            });
-          } else if (tombstone.tableName === 'reflections') {
-            await tx.reflection.updateMany({
-              where: { id: tombstone.recordId, userId },
-              data: { deletedAt, updatedAt: now },
-            });
-          }
-        }
+        await Promise.all(
+          dto.tombstones.map((tombstone) => {
+            const deletedAt = tombstone.deletedAt ? new Date(tombstone.deletedAt) : now;
+            if (tombstone.tableName === 'habits') {
+              return tx.habit.updateMany({
+                where: { id: tombstone.recordId, userId },
+                data: { deletedAt, updatedAt: now },
+              });
+            } else if (tombstone.tableName === 'habit_completions') {
+              return tx.habitCompletion.updateMany({
+                where: { id: tombstone.recordId, userId },
+                data: { deletedAt, updatedAt: now },
+              });
+            } else if (tombstone.tableName === 'reflections') {
+              return tx.reflection.updateMany({
+                where: { id: tombstone.recordId, userId },
+                data: { deletedAt, updatedAt: now },
+              });
+            }
+            return Promise.resolve();
+          }),
+        );
       }
 
       return {

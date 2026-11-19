@@ -258,12 +258,40 @@ Return JSON with:
   }
 
   async *streamChat(userId: string, userMessage: string, history: ChatMessage[] = []): AsyncGenerator<string> {
+    if (this.genAI && this.isEnabled) {
+      try {
+        const contents = [
+          { role: 'user', parts: [{ text: COACH_SYSTEM_PROMPT }] },
+          ...history.map((m) => ({
+            role: m.role === 'assistant' ? 'model' : 'user',
+            parts: [{ text: m.content }],
+          })),
+          { role: 'user', parts: [{ text: userMessage }] },
+        ];
+
+        const streamResult = await this.genAI.models.generateContentStream({
+          model: this.modelName,
+          contents,
+        });
+
+        for await (const chunk of streamResult) {
+          const text = chunk.text || chunk.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (text) {
+            yield text;
+          }
+        }
+        return;
+      } catch (err: any) {
+        this.logger.warn(`Gemini streaming error: ${err.message}. Falling back to local stream.`);
+      }
+    }
+
     const fullResponse = await this.chat(userId, userMessage, history);
     const words = fullResponse.content.split(' ');
 
     for (const word of words) {
       yield `${word} `;
-      // Simulate realistic conversational streaming cadence (25ms)
+      // Conversational streaming cadence for local engine
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
   }
